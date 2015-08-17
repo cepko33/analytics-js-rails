@@ -1,231 +1,3345 @@
-;(function(){
+(function umd(require){
+  if (typeof exports === 'object') {
+    module.exports = require('1');
+  } else if (typeof define === 'function' && (define.amd || define.cmd)) {
+    define(function(){ return require('1'); });
+  } else {
+    this['analytics'] = require('1');
+  }
+})((function outer(modules, cache, entries){
+
+  /**
+   * Global
+   */
+
+  var global = (function(){ return this; })();
+
+  /**
+   * Require `name`.
+   *
+   * @param {String} name
+   * @api public
+   */
+
+  function require(name){
+    if (cache[name]) return cache[name].exports;
+    if (modules[name]) return call(name, require);
+    throw new Error('cannot find module "' + name + '"');
+  }
+
+  /**
+   * Call module `id` and cache it.
+   *
+   * @param {Number} id
+   * @param {Function} require
+   * @return {Function}
+   * @api private
+   */
+
+  function call(id, require){
+    var m = cache[id] = { exports: {} };
+    var mod = modules[id];
+    var name = mod[2];
+    var fn = mod[0];
+    var threw = true;
+
+    try {
+      fn.call(m.exports, function(req){
+        var dep = modules[id][1][req];
+        return require(dep || req);
+      }, m, m.exports, outer, modules, cache, entries);
+      threw = false;
+    } finally {
+      if (threw) {
+        delete cache[id];
+      } else if (name) {
+        // expose as 'name'.
+        cache[name] = cache[id];
+      }
+    }
+
+    return cache[id].exports;
+  }
+
+  /**
+   * Require all entries exposing them on global if needed.
+   */
+
+  for (var id in entries) {
+    if (entries[id]) {
+      global[entries[id]] = require(id);
+    } else {
+      require(id);
+    }
+  }
+
+  /**
+   * Duo flag.
+   */
+
+  require.duo = true;
+
+  /**
+   * Expose cache.
+   */
+
+  require.cache = cache;
+
+  /**
+   * Expose modules
+   */
+
+  require.modules = modules;
+
+  /**
+   * Return newest require.
+   */
+
+   return require;
+})({
+1: [function(require, module, exports) {
 
 /**
- * Require the given path.
+ * Analytics.js
  *
- * @param {String} path
- * @return {Object} exports
- * @api public
+ * (C) 2013 Segment.io Inc.
  */
 
-function require(path, parent, orig) {
-  var resolved = require.resolve(path);
+var Analytics = require('./analytics');
+var Integrations = require('./integrations');
+var each = require('each');
 
-  // lookup failed
-  if (null == resolved) {
-    orig = orig || path;
-    parent = parent || 'root';
-    var err = new Error('Failed to require "' + orig + '" from "' + parent + '"');
-    err.path = orig;
-    err.parent = parent;
-    err.require = true;
-    throw err;
-  }
+/**
+ * Expose the `analytics` singleton.
+ */
 
-  var module = require.modules[resolved];
+var analytics = module.exports = exports = new Analytics();
 
-  // perform real require()
-  // by invoking the module's
-  // registered function
-  if (!module.exports) {
-    module.exports = {};
-    module.client = module.component = true;
-    module.call(this, module.exports, require.relative(resolved), module);
-  }
+/**
+ * Expose require
+ */
 
-  return module.exports;
+analytics.require = require;
+
+/**
+ * Expose `VERSION`.
+ */
+
+exports.VERSION = require('../bower.json').version;
+
+/**
+ * Add integrations.
+ */
+
+each(Integrations, function(name, Integration) {
+  analytics.use(Integration);
+});
+
+}, {"./analytics":2,"./integrations":3,"each":4,"../bower.json":5}],
+2: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var _analytics = window.analytics;
+var Emitter = require('emitter');
+var Facade = require('facade');
+var after = require('after');
+var bind = require('bind');
+var callback = require('callback');
+var clone = require('clone');
+var cookie = require('./cookie');
+var debug = require('debug');
+var defaults = require('defaults');
+var each = require('each');
+var group = require('./group');
+var is = require('is');
+var isMeta = require('is-meta');
+var keys = require('object').keys;
+var memory = require('./memory');
+var normalize = require('./normalize');
+var on = require('event').bind;
+var pageDefaults = require('./pageDefaults');
+var pick = require('pick');
+var prevent = require('prevent');
+var querystring = require('querystring');
+var size = require('object').length;
+var store = require('./store');
+var user = require('./user');
+var Alias = Facade.Alias;
+var Group = Facade.Group;
+var Identify = Facade.Identify;
+var Page = Facade.Page;
+var Track = Facade.Track;
+
+/**
+ * Expose `Analytics`.
+ */
+
+exports = module.exports = Analytics;
+
+/**
+ * Expose storage.
+ */
+
+exports.cookie = cookie;
+exports.store = store;
+exports.memory = memory;
+
+/**
+ * Initialize a new `Analytics` instance.
+ */
+
+function Analytics() {
+  this._options({});
+  this.Integrations = {};
+  this._integrations = {};
+  this._readied = false;
+  this._timeout = 300;
+  // XXX: BACKWARDS COMPATIBILITY
+  this._user = user;
+  this.log = debug('analytics.js');
+  bind.all(this);
+
+  var self = this;
+  this.on('initialize', function(settings, options){
+    if (options.initialPageview) self.page();
+    self._parseQuery();
+  });
 }
 
 /**
- * Registered modules.
+ * Event Emitter.
  */
 
-require.modules = {};
+Emitter(Analytics.prototype);
 
 /**
- * Registered aliases.
+ * Use a `plugin`.
+ *
+ * @param {Function} plugin
+ * @return {Analytics}
  */
 
-require.aliases = {};
-
-/**
- * Resolve `path`.
- *
- * Lookup:
- *
- *   - PATH/index.js
- *   - PATH.js
- *   - PATH
- *
- * @param {String} path
- * @return {String} path or null
- * @api private
- */
-
-require.resolve = function(path) {
-  if (path.charAt(0) === '/') path = path.slice(1);
-
-  var paths = [
-    path,
-    path + '.js',
-    path + '.json',
-    path + '/index.js',
-    path + '/index.json'
-  ];
-
-  for (var i = 0; i < paths.length; i++) {
-    var path = paths[i];
-    if (require.modules.hasOwnProperty(path)) return path;
-    if (require.aliases.hasOwnProperty(path)) return require.aliases[path];
-  }
+Analytics.prototype.use = function(plugin) {
+  plugin(this);
+  return this;
 };
 
 /**
- * Normalize `path` relative to the current path.
+ * Define a new `Integration`.
  *
- * @param {String} curr
- * @param {String} path
- * @return {String}
- * @api private
+ * @param {Function} Integration
+ * @return {Analytics}
  */
 
-require.normalize = function(curr, path) {
-  var segs = [];
+Analytics.prototype.addIntegration = function(Integration) {
+  var name = Integration.prototype.name;
+  if (!name) throw new TypeError('attempted to add an invalid integration');
+  this.Integrations[name] = Integration;
+  return this;
+};
 
-  if ('.' != path.charAt(0)) return path;
+/**
+ * Initialize with the given integration `settings` and `options`.
+ *
+ * Aliased to `init` for convenience.
+ *
+ * @param {Object} [settings={}]
+ * @param {Object} [options={}]
+ * @return {Analytics}
+ */
 
-  curr = curr.split('/');
-  path = path.split('/');
+Analytics.prototype.init = Analytics.prototype.initialize = function(settings, options) {
+  settings = settings || {};
+  options = options || {};
 
-  for (var i = 0; i < path.length; ++i) {
-    if ('..' == path[i]) {
-      curr.pop();
-    } else if ('.' != path[i] && '' != path[i]) {
-      segs.push(path[i]);
+  this._options(options);
+  this._readied = false;
+
+  // clean unknown integrations from settings
+  var self = this;
+  each(settings, function(name) {
+    var Integration = self.Integrations[name];
+    if (!Integration) delete settings[name];
+  });
+
+  // add integrations
+  each(settings, function(name, opts) {
+    var Integration = self.Integrations[name];
+    var integration = new Integration(clone(opts));
+    self.log('initialize %o - %o', name, opts);
+    self.add(integration);
+  });
+
+  var integrations = this._integrations;
+
+  // load user now that options are set
+  user.load();
+  group.load();
+
+  // make ready callback
+  var ready = after(size(integrations), function() {
+    self._readied = true;
+    self.emit('ready');
+  });
+
+  // initialize integrations, passing ready
+  each(integrations, function(name, integration) {
+    if (options.initialPageview && integration.options.initialPageview === false) {
+      integration.page = after(2, integration.page);
     }
-  }
 
-  return curr.concat(segs).join('/');
+    integration.analytics = self;
+    integration.once('ready', ready);
+    integration.initialize();
+  });
+
+  // backwards compat with angular plugin.
+  // TODO: remove
+  this.initialized = true;
+
+  this.emit('initialize', settings, options);
+  return this;
 };
 
 /**
- * Register module at `path` with callback `definition`.
+ * Set the user's `id`.
  *
- * @param {String} path
- * @param {Function} definition
- * @api private
+ * @param {Mixed} id
  */
 
-require.register = function(path, definition) {
-  require.modules[path] = definition;
+Analytics.prototype.setAnonymousId = function(id){
+  this.user().anonymousId(id);
+  return this;
 };
 
 /**
- * Alias a module definition.
+ * Add an integration.
  *
- * @param {String} from
- * @param {String} to
- * @api private
+ * @param {Integration} integration
  */
 
-require.alias = function(from, to) {
-  if (!require.modules.hasOwnProperty(from)) {
-    throw new Error('Failed to alias "' + from + '", it does not exist');
-  }
-  require.aliases[to] = from;
+Analytics.prototype.add = function(integration){
+  this._integrations[integration.name] = integration;
+  return this;
 };
 
 /**
- * Return a require function relative to the `parent` path.
+ * Identify a user by optional `id` and `traits`.
  *
- * @param {String} parent
- * @return {Function}
- * @api private
+ * @param {string} [id=user.id()] User ID.
+ * @param {Object} [traits=null] User traits.
+ * @param {Object} [options=null]
+ * @param {Function} [fn]
+ * @return {Analytics}
  */
 
-require.relative = function(parent) {
-  var p = require.normalize(parent, '..');
+Analytics.prototype.identify = function(id, traits, options, fn) {
+  // Argument reshuffling.
+  /* eslint-disable no-unused-expressions, no-sequences */
+  if (is.fn(options)) fn = options, options = null;
+  if (is.fn(traits)) fn = traits, options = null, traits = null;
+  if (is.object(id)) options = traits, traits = id, id = user.id();
+  /* eslint-enable no-unused-expressions, no-sequences */
 
-  /**
-   * lastIndexOf helper.
-   */
+  // clone traits before we manipulate so we don't do anything uncouth, and take
+  // from `user` so that we carryover anonymous traits
+  user.identify(id, traits);
 
-  function lastIndexOf(arr, obj) {
-    var i = arr.length;
-    while (i--) {
-      if (arr[i] === obj) return i;
-    }
-    return -1;
-  }
+  var msg = this.normalize({
+    options: options,
+    traits: user.traits(),
+    userId: user.id()
+  });
 
-  /**
-   * The relative require() itself.
-   */
+  this._invoke('identify', new Identify(msg));
 
-  function localRequire(path) {
-    var resolved = localRequire.resolve(path);
-    return require(resolved, parent, path);
-  }
-
-  /**
-   * Resolve relative to the parent.
-   */
-
-  localRequire.resolve = function(path) {
-    var c = path.charAt(0);
-    if ('/' == c) return path.slice(1);
-    if ('.' == c) return require.normalize(p, path);
-
-    // resolve deps by returning
-    // the dep in the nearest "deps"
-    // directory
-    var segs = parent.split('/');
-    var i = lastIndexOf(segs, 'deps') + 1;
-    if (!i) i = 0;
-    path = segs.slice(0, i + 1).join('/') + '/deps/' + path;
-    return path;
-  };
-
-  /**
-   * Check if module is defined at `path`.
-   */
-
-  localRequire.exists = function(path) {
-    return require.modules.hasOwnProperty(localRequire.resolve(path));
-  };
-
-  return localRequire;
+  // emit
+  this.emit('identify', id, traits, options);
+  this._callback(fn);
+  return this;
 };
-require.register("avetisk-defaults/index.js", function(exports, require, module){
-'use strict';
 
 /**
- * Merge default values.
+ * Return the current user.
  *
- * @param {Object} dest
- * @param {Object} defaults
  * @return {Object}
+ */
+
+Analytics.prototype.user = function() {
+  return user;
+};
+
+/**
+ * Identify a group by optional `id` and `traits`. Or, if no arguments are
+ * supplied, return the current group.
+ *
+ * @param {string} [id=group.id()] Group ID.
+ * @param {Object} [traits=null] Group traits.
+ * @param {Object} [options=null]
+ * @param {Function} [fn]
+ * @return {Analytics|Object}
+ */
+
+Analytics.prototype.group = function(id, traits, options, fn) {
+  /* eslint-disable no-unused-expressions, no-sequences */
+  if (!arguments.length) return group;
+  if (is.fn(options)) fn = options, options = null;
+  if (is.fn(traits)) fn = traits, options = null, traits = null;
+  if (is.object(id)) options = traits, traits = id, id = group.id();
+  /* eslint-enable no-unused-expressions, no-sequences */
+
+
+  // grab from group again to make sure we're taking from the source
+  group.identify(id, traits);
+
+  var msg = this.normalize({
+    options: options,
+    traits: group.traits(),
+    groupId: group.id()
+  });
+
+  this._invoke('group', new Group(msg));
+
+  this.emit('group', id, traits, options);
+  this._callback(fn);
+  return this;
+};
+
+/**
+ * Track an `event` that a user has triggered with optional `properties`.
+ *
+ * @param {string} event
+ * @param {Object} [properties=null]
+ * @param {Object} [options=null]
+ * @param {Function} [fn]
+ * @return {Analytics}
+ */
+
+Analytics.prototype.track = function(event, properties, options, fn) {
+  // Argument reshuffling.
+  /* eslint-disable no-unused-expressions, no-sequences */
+  if (is.fn(options)) fn = options, options = null;
+  if (is.fn(properties)) fn = properties, options = null, properties = null;
+  /* eslint-enable no-unused-expressions, no-sequences */
+
+  // figure out if the event is archived.
+  var plan = this.options.plan || {};
+  var events = plan.track || {};
+
+  // normalize
+  var msg = this.normalize({
+    properties: properties,
+    options: options,
+    event: event
+  });
+
+  // plan.
+  plan = events[event];
+  if (plan) {
+    this.log('plan %o - %o', event, plan);
+    if (plan.enabled === false) return this._callback(fn);
+    defaults(msg.integrations, plan.integrations || {});
+  }
+
+  this._invoke('track', new Track(msg));
+
+  this.emit('track', event, properties, options);
+  this._callback(fn);
+  return this;
+};
+
+/**
+ * Helper method to track an outbound link that would normally navigate away
+ * from the page before the analytics calls were sent.
+ *
+ * BACKWARDS COMPATIBILITY: aliased to `trackClick`.
+ *
+ * @param {Element|Array} links
+ * @param {string|Function} event
+ * @param {Object|Function} properties (optional)
+ * @return {Analytics}
+ */
+
+Analytics.prototype.trackClick = Analytics.prototype.trackLink = function(links, event, properties) {
+  if (!links) return this;
+  // always arrays, handles jquery
+  if (is.element(links)) links = [links];
+
+  var self = this;
+  each(links, function(el) {
+    if (!is.element(el)) throw new TypeError('Must pass HTMLElement to `analytics.trackLink`.');
+    on(el, 'click', function(e) {
+      var ev = is.fn(event) ? event(el) : event;
+      var props = is.fn(properties) ? properties(el) : properties;
+      var href = el.getAttribute('href')
+        || el.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+        || el.getAttribute('xlink:href');
+
+      self.track(ev, props);
+
+      if (href && el.target !== '_blank' && !isMeta(e)) {
+        prevent(e);
+        self._callback(function() {
+          window.location.href = href;
+        });
+      }
+    });
+  });
+
+  return this;
+};
+
+/**
+ * Helper method to track an outbound form that would normally navigate away
+ * from the page before the analytics calls were sent.
+ *
+ * BACKWARDS COMPATIBILITY: aliased to `trackSubmit`.
+ *
+ * @param {Element|Array} forms
+ * @param {string|Function} event
+ * @param {Object|Function} properties (optional)
+ * @return {Analytics}
+ */
+
+Analytics.prototype.trackSubmit = Analytics.prototype.trackForm = function(forms, event, properties) {
+  if (!forms) return this;
+  // always arrays, handles jquery
+  if (is.element(forms)) forms = [forms];
+
+  var self = this;
+  each(forms, function(el) {
+    if (!is.element(el)) throw new TypeError('Must pass HTMLElement to `analytics.trackForm`.');
+    function handler(e) {
+      prevent(e);
+
+      var ev = is.fn(event) ? event(el) : event;
+      var props = is.fn(properties) ? properties(el) : properties;
+      self.track(ev, props);
+
+      self._callback(function() {
+        el.submit();
+      });
+    }
+
+    // Support the events happening through jQuery or Zepto instead of through
+    // the normal DOM API, because `el.submit` doesn't bubble up events...
+    var $ = window.jQuery || window.Zepto;
+    if ($) {
+      $(el).submit(handler);
+    } else {
+      on(el, 'submit', handler);
+    }
+  });
+
+  return this;
+};
+
+/**
+ * Trigger a pageview, labeling the current page with an optional `category`,
+ * `name` and `properties`.
+ *
+ * @param {string} [category]
+ * @param {string} [name]
+ * @param {Object|string} [properties] (or path)
+ * @param {Object} [options]
+ * @param {Function} [fn]
+ * @return {Analytics}
+ */
+
+Analytics.prototype.page = function(category, name, properties, options, fn) {
+  // Argument reshuffling.
+  /* eslint-disable no-unused-expressions, no-sequences */
+  if (is.fn(options)) fn = options, options = null;
+  if (is.fn(properties)) fn = properties, options = properties = null;
+  if (is.fn(name)) fn = name, options = properties = name = null;
+  if (is.object(category)) options = name, properties = category, name = category = null;
+  if (is.object(name)) options = properties, properties = name, name = null;
+  if (is.string(category) && !is.string(name)) name = category, category = null;
+  /* eslint-enable no-unused-expressions, no-sequences */
+
+  properties = clone(properties) || {};
+  if (name) properties.name = name;
+  if (category) properties.category = category;
+
+  // Ensure properties has baseline spec properties.
+  // TODO: Eventually move these entirely to `options.context.page`
+  var defs = pageDefaults();
+  defaults(properties, defs);
+
+  // Mirror user overrides to `options.context.page` (but exclude custom properties)
+  // (Any page defaults get applied in `this.normalize` for consistency.)
+  // Weird, yeah--moving special props to `context.page` will fix this in the long term.
+  var overrides = pick(keys(defs), properties);
+  if (!is.empty(overrides)) {
+    options = options || {};
+    options.context = options.context || {};
+    options.context.page = overrides;
+  }
+
+  var msg = this.normalize({
+    properties: properties,
+    category: category,
+    options: options,
+    name: name
+  });
+
+  this._invoke('page', new Page(msg));
+
+  this.emit('page', category, name, properties, options);
+  this._callback(fn);
+  return this;
+};
+
+/**
+ * FIXME: BACKWARDS COMPATIBILITY: convert an old `pageview` to a `page` call.
+ *
+ * @param {string} [url]
+ * @return {Analytics}
+ * @api private
+ */
+
+Analytics.prototype.pageview = function(url) {
+  var properties = {};
+  if (url) properties.path = url;
+  this.page(properties);
+  return this;
+};
+
+/**
+ * Merge two previously unassociated user identities.
+ *
+ * @param {string} to
+ * @param {string} from (optional)
+ * @param {Object} options (optional)
+ * @param {Function} fn (optional)
+ * @return {Analytics}
+ */
+
+Analytics.prototype.alias = function(to, from, options, fn) {
+  // Argument reshuffling.
+  /* eslint-disable no-unused-expressions, no-sequences */
+  if (is.fn(options)) fn = options, options = null;
+  if (is.fn(from)) fn = from, options = null, from = null;
+  if (is.object(from)) options = from, from = null;
+  /* eslint-enable no-unused-expressions, no-sequences */
+
+  var msg = this.normalize({
+    options: options,
+    previousId: from,
+    userId: to
+  });
+
+  this._invoke('alias', new Alias(msg));
+
+  this.emit('alias', to, from, options);
+  this._callback(fn);
+  return this;
+};
+
+/**
+ * Register a `fn` to be fired when all the analytics services are ready.
+ *
+ * @param {Function} fn
+ * @return {Analytics}
+ */
+
+Analytics.prototype.ready = function(fn) {
+  if (is.fn(fn)) {
+    if (this._readied) {
+      callback.async(fn);
+    } else {
+      this.once('ready', fn);
+    }
+  }
+  return this;
+};
+
+/**
+ * Set the `timeout` (in milliseconds) used for callbacks.
+ *
+ * @param {Number} timeout
+ */
+
+Analytics.prototype.timeout = function(timeout) {
+  this._timeout = timeout;
+};
+
+/**
+ * Enable or disable debug.
+ *
+ * @param {string|boolean} str
+ */
+
+Analytics.prototype.debug = function(str){
+  if (!arguments.length || str) {
+    debug.enable('analytics:' + (str || '*'));
+  } else {
+    debug.disable();
+  }
+};
+
+/**
+ * Apply options.
+ *
+ * @param {Object} options
+ * @return {Analytics}
+ * @api private
+ */
+
+Analytics.prototype._options = function(options) {
+  options = options || {};
+  this.options = options;
+  cookie.options(options.cookie);
+  store.options(options.localStorage);
+  user.options(options.user);
+  group.options(options.group);
+  return this;
+};
+
+/**
+ * Callback a `fn` after our defined timeout period.
+ *
+ * @param {Function} fn
+ * @return {Analytics}
+ * @api private
+ */
+
+Analytics.prototype._callback = function(fn) {
+  callback.async(fn, this._timeout);
+  return this;
+};
+
+/**
+ * Call `method` with `facade` on all enabled integrations.
+ *
+ * @param {string} method
+ * @param {Facade} facade
+ * @return {Analytics}
+ * @api private
+ */
+
+Analytics.prototype._invoke = function(method, facade) {
+  this.emit('invoke', facade);
+
+  each(this._integrations, function(name, integration) {
+    if (!facade.enabled(name)) return;
+    integration.invoke.call(integration, method, facade);
+  });
+
+  return this;
+};
+
+/**
+ * Push `args`.
+ *
+ * @param {Array} args
+ * @api private
+ */
+
+Analytics.prototype.push = function(args){
+  var method = args.shift();
+  if (!this[method]) return;
+  this[method].apply(this, args);
+};
+
+/**
+ * Reset group and user traits and id's.
+ *
  * @api public
  */
-var defaults = function (dest, src, recursive) {
-  for (var prop in src) {
-    if (recursive && dest[prop] instanceof Object && src[prop] instanceof Object) {
-      dest[prop] = defaults(dest[prop], src[prop], true);
-    } else if (! (prop in dest)) {
-      dest[prop] = src[prop];
-    }
-  }
 
-  return dest;
+Analytics.prototype.reset = function(){
+  this.user().logout();
+  this.group().logout();
 };
 
 /**
- * Expose `defaults`.
+ * Parse the query string for callable methods.
+ *
+ * @return {Analytics}
+ * @api private
  */
-module.exports = defaults;
 
-});
-require.register("component-clone/index.js", function(exports, require, module){
+Analytics.prototype._parseQuery = function() {
+  // Identify and track any `ajs_uid` and `ajs_event` parameters in the URL.
+  var q = querystring.parse(window.location.search);
+  if (q.ajs_uid) this.identify(q.ajs_uid);
+  if (q.ajs_event) this.track(q.ajs_event);
+  if (q.ajs_aid) user.anonymousId(q.ajs_aid);
+  return this;
+};
+
+/**
+ * Normalize the given `msg`.
+ *
+ * @param {Object} msg
+ * @return {Object}
+ */
+
+Analytics.prototype.normalize = function(msg){
+  msg = normalize(msg, keys(this._integrations));
+  if (msg.anonymousId) user.anonymousId(msg.anonymousId);
+  msg.anonymousId = user.anonymousId();
+
+  // Ensure all outgoing requests include page data in their contexts.
+  msg.context.page = defaults(msg.context.page || {}, pageDefaults());
+
+  return msg;
+};
+
+/**
+ * No conflict support.
+ */
+
+Analytics.prototype.noConflict = function(){
+  window.analytics = _analytics;
+  return this;
+};
+
+
+}, {"emitter":6,"facade":7,"after":8,"bind":9,"callback":10,"clone":11,"./cookie":12,"debug":13,"defaults":14,"each":4,"./group":15,"is":16,"is-meta":17,"object":18,"./memory":19,"./normalize":20,"event":21,"./pageDefaults":22,"pick":23,"prevent":24,"querystring":25,"./store":26,"./user":27}],
+6: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var index = require('indexof');
+
+/**
+ * Expose `Emitter`.
+ */
+
+module.exports = Emitter;
+
+/**
+ * Initialize a new `Emitter`.
+ *
+ * @api public
+ */
+
+function Emitter(obj) {
+  if (obj) return mixin(obj);
+};
+
+/**
+ * Mixin the emitter properties.
+ *
+ * @param {Object} obj
+ * @return {Object}
+ * @api private
+ */
+
+function mixin(obj) {
+  for (var key in Emitter.prototype) {
+    obj[key] = Emitter.prototype[key];
+  }
+  return obj;
+}
+
+/**
+ * Listen on the given `event` with `fn`.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.on =
+Emitter.prototype.addEventListener = function(event, fn){
+  this._callbacks = this._callbacks || {};
+  (this._callbacks[event] = this._callbacks[event] || [])
+    .push(fn);
+  return this;
+};
+
+/**
+ * Adds an `event` listener that will be invoked a single
+ * time then automatically removed.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.once = function(event, fn){
+  var self = this;
+  this._callbacks = this._callbacks || {};
+
+  function on() {
+    self.off(event, on);
+    fn.apply(this, arguments);
+  }
+
+  fn._off = on;
+  this.on(event, on);
+  return this;
+};
+
+/**
+ * Remove the given callback for `event` or all
+ * registered callbacks.
+ *
+ * @param {String} event
+ * @param {Function} fn
+ * @return {Emitter}
+ * @api public
+ */
+
+Emitter.prototype.off =
+Emitter.prototype.removeListener =
+Emitter.prototype.removeAllListeners =
+Emitter.prototype.removeEventListener = function(event, fn){
+  this._callbacks = this._callbacks || {};
+
+  // all
+  if (0 == arguments.length) {
+    this._callbacks = {};
+    return this;
+  }
+
+  // specific event
+  var callbacks = this._callbacks[event];
+  if (!callbacks) return this;
+
+  // remove all handlers
+  if (1 == arguments.length) {
+    delete this._callbacks[event];
+    return this;
+  }
+
+  // remove specific handler
+  var i = index(callbacks, fn._off || fn);
+  if (~i) callbacks.splice(i, 1);
+  return this;
+};
+
+/**
+ * Emit `event` with the given args.
+ *
+ * @param {String} event
+ * @param {Mixed} ...
+ * @return {Emitter}
+ */
+
+Emitter.prototype.emit = function(event){
+  this._callbacks = this._callbacks || {};
+  var args = [].slice.call(arguments, 1)
+    , callbacks = this._callbacks[event];
+
+  if (callbacks) {
+    callbacks = callbacks.slice(0);
+    for (var i = 0, len = callbacks.length; i < len; ++i) {
+      callbacks[i].apply(this, args);
+    }
+  }
+
+  return this;
+};
+
+/**
+ * Return array of callbacks for `event`.
+ *
+ * @param {String} event
+ * @return {Array}
+ * @api public
+ */
+
+Emitter.prototype.listeners = function(event){
+  this._callbacks = this._callbacks || {};
+  return this._callbacks[event] || [];
+};
+
+/**
+ * Check if this emitter has `event` handlers.
+ *
+ * @param {String} event
+ * @return {Boolean}
+ * @api public
+ */
+
+Emitter.prototype.hasListeners = function(event){
+  return !! this.listeners(event).length;
+};
+
+}, {"indexof":28}],
+28: [function(require, module, exports) {
+module.exports = function(arr, obj){
+  if (arr.indexOf) return arr.indexOf(obj);
+  for (var i = 0; i < arr.length; ++i) {
+    if (arr[i] === obj) return i;
+  }
+  return -1;
+};
+}, {}],
+7: [function(require, module, exports) {
+
+var Facade = require('./facade');
+
+/**
+ * Expose `Facade` facade.
+ */
+
+module.exports = Facade;
+
+/**
+ * Expose specific-method facades.
+ */
+
+Facade.Alias = require('./alias');
+Facade.Group = require('./group');
+Facade.Identify = require('./identify');
+Facade.Track = require('./track');
+Facade.Page = require('./page');
+Facade.Screen = require('./screen');
+
+}, {"./facade":29,"./alias":30,"./group":31,"./identify":32,"./track":33,"./page":34,"./screen":35}],
+29: [function(require, module, exports) {
+
+var traverse = require('isodate-traverse');
+var isEnabled = require('./is-enabled');
+var clone = require('./utils').clone;
+var type = require('./utils').type;
+var address = require('./address');
+var objCase = require('obj-case');
+var newDate = require('new-date');
+
+/**
+ * Expose `Facade`.
+ */
+
+module.exports = Facade;
+
+/**
+ * Initialize a new `Facade` with an `obj` of arguments.
+ *
+ * @param {Object} obj
+ */
+
+function Facade (obj) {
+  obj = clone(obj);
+  if (!obj.hasOwnProperty('timestamp')) obj.timestamp = new Date();
+  else obj.timestamp = newDate(obj.timestamp);
+  traverse(obj);
+  this.obj = obj;
+}
+
+/**
+ * Mixin address traits.
+ */
+
+address(Facade.prototype);
+
+/**
+ * Return a proxy function for a `field` that will attempt to first use methods,
+ * and fallback to accessing the underlying object directly. You can specify
+ * deeply nested fields too like:
+ *
+ *   this.proxy('options.Librato');
+ *
+ * @param {String} field
+ */
+
+Facade.prototype.proxy = function (field) {
+  var fields = field.split('.');
+  field = fields.shift();
+
+  // Call a function at the beginning to take advantage of facaded fields
+  var obj = this[field] || this.field(field);
+  if (!obj) return obj;
+  if (typeof obj === 'function') obj = obj.call(this) || {};
+  if (fields.length === 0) return transform(obj);
+
+  obj = objCase(obj, fields.join('.'));
+  return transform(obj);
+};
+
+/**
+ * Directly access a specific `field` from the underlying object, returning a
+ * clone so outsiders don't mess with stuff.
+ *
+ * @param {String} field
+ * @return {Mixed}
+ */
+
+Facade.prototype.field = function (field) {
+  var obj = this.obj[field];
+  return transform(obj);
+};
+
+/**
+ * Utility method to always proxy a particular `field`. You can specify deeply
+ * nested fields too like:
+ *
+ *   Facade.proxy('options.Librato');
+ *
+ * @param {String} field
+ * @return {Function}
+ */
+
+Facade.proxy = function (field) {
+  return function () {
+    return this.proxy(field);
+  };
+};
+
+/**
+ * Utility method to directly access a `field`.
+ *
+ * @param {String} field
+ * @return {Function}
+ */
+
+Facade.field = function (field) {
+  return function () {
+    return this.field(field);
+  };
+};
+
+/**
+ * Proxy multiple `path`.
+ *
+ * @param {String} path
+ * @return {Array}
+ */
+
+Facade.multi = function(path){
+  return function(){
+    var multi = this.proxy(path + 's');
+    if ('array' == type(multi)) return multi;
+    var one = this.proxy(path);
+    if (one) one = [clone(one)];
+    return one || [];
+  };
+};
+
+/**
+ * Proxy one `path`.
+ *
+ * @param {String} path
+ * @return {Mixed}
+ */
+
+Facade.one = function(path){
+  return function(){
+    var one = this.proxy(path);
+    if (one) return one;
+    var multi = this.proxy(path + 's');
+    if ('array' == type(multi)) return multi[0];
+  };
+};
+
+/**
+ * Get the basic json object of this facade.
+ *
+ * @return {Object}
+ */
+
+Facade.prototype.json = function () {
+  var ret = clone(this.obj);
+  if (this.type) ret.type = this.type();
+  return ret;
+};
+
+/**
+ * Get the options of a call (formerly called "context"). If you pass an
+ * integration name, it will get the options for that specific integration, or
+ * undefined if the integration is not enabled.
+ *
+ * @param {String} integration (optional)
+ * @return {Object or Null}
+ */
+
+Facade.prototype.context =
+Facade.prototype.options = function (integration) {
+  var options = clone(this.obj.options || this.obj.context) || {};
+  if (!integration) return clone(options);
+  if (!this.enabled(integration)) return;
+  var integrations = this.integrations();
+  var value = integrations[integration] || objCase(integrations, integration);
+  if ('boolean' == typeof value) value = {};
+  return value || {};
+};
+
+/**
+ * Check whether an integration is enabled.
+ *
+ * @param {String} integration
+ * @return {Boolean}
+ */
+
+Facade.prototype.enabled = function (integration) {
+  var allEnabled = this.proxy('options.providers.all');
+  if (typeof allEnabled !== 'boolean') allEnabled = this.proxy('options.all');
+  if (typeof allEnabled !== 'boolean') allEnabled = this.proxy('integrations.all');
+  if (typeof allEnabled !== 'boolean') allEnabled = true;
+
+  var enabled = allEnabled && isEnabled(integration);
+  var options = this.integrations();
+
+  // If the integration is explicitly enabled or disabled, use that
+  // First, check options.providers for backwards compatibility
+  if (options.providers && options.providers.hasOwnProperty(integration)) {
+    enabled = options.providers[integration];
+  }
+
+  // Next, check for the integration's existence in 'options' to enable it.
+  // If the settings are a boolean, use that, otherwise it should be enabled.
+  if (options.hasOwnProperty(integration)) {
+    var settings = options[integration];
+    if (typeof settings === 'boolean') {
+      enabled = settings;
+    } else {
+      enabled = true;
+    }
+  }
+
+  return enabled ? true : false;
+};
+
+/**
+ * Get all `integration` options.
+ *
+ * @param {String} integration
+ * @return {Object}
+ * @api private
+ */
+
+Facade.prototype.integrations = function(){
+  return this.obj.integrations
+    || this.proxy('options.providers')
+    || this.options();
+};
+
+/**
+ * Check whether the user is active.
+ *
+ * @return {Boolean}
+ */
+
+Facade.prototype.active = function () {
+  var active = this.proxy('options.active');
+  if (active === null || active === undefined) active = true;
+  return active;
+};
+
+/**
+ * Get `sessionId / anonymousId`.
+ *
+ * @return {Mixed}
+ * @api public
+ */
+
+Facade.prototype.sessionId =
+Facade.prototype.anonymousId = function(){
+  return this.field('anonymousId')
+    || this.field('sessionId');
+};
+
+/**
+ * Get `groupId` from `context.groupId`.
+ *
+ * @return {String}
+ * @api public
+ */
+
+Facade.prototype.groupId = Facade.proxy('options.groupId');
+
+/**
+ * Get the call's "super properties" which are just traits that have been
+ * passed in as if from an identify call.
+ *
+ * @param {Object} aliases
+ * @return {Object}
+ */
+
+Facade.prototype.traits = function (aliases) {
+  var ret = this.proxy('options.traits') || {};
+  var id = this.userId();
+  aliases = aliases || {};
+
+  if (id) ret.id = id;
+
+  for (var alias in aliases) {
+    var value = null == this[alias]
+      ? this.proxy('options.traits.' + alias)
+      : this[alias]();
+    if (null == value) continue;
+    ret[aliases[alias]] = value;
+    delete ret[alias];
+  }
+
+  return ret;
+};
+
+/**
+ * Add a convenient way to get the library name and version
+ */
+
+Facade.prototype.library = function(){
+  var library = this.proxy('options.library');
+  if (!library) return { name: 'unknown', version: null };
+  if (typeof library === 'string') return { name: library, version: null };
+  return library;
+};
+
+/**
+ * Setup some basic proxies.
+ */
+
+Facade.prototype.userId = Facade.field('userId');
+Facade.prototype.channel = Facade.field('channel');
+Facade.prototype.timestamp = Facade.field('timestamp');
+Facade.prototype.userAgent = Facade.proxy('options.userAgent');
+Facade.prototype.ip = Facade.proxy('options.ip');
+
+/**
+ * Return the cloned and traversed object
+ *
+ * @param {Mixed} obj
+ * @return {Mixed}
+ */
+
+function transform(obj){
+  var cloned = clone(obj);
+  return cloned;
+}
+
+}, {"isodate-traverse":36,"./is-enabled":37,"./utils":38,"./address":39,"obj-case":40,"new-date":41}],
+36: [function(require, module, exports) {
+
+var is = require('is');
+var isodate = require('isodate');
+var each;
+
+try {
+  each = require('each');
+} catch (err) {
+  each = require('each-component');
+}
+
+/**
+ * Expose `traverse`.
+ */
+
+module.exports = traverse;
+
+/**
+ * Traverse an object or array, and return a clone with all ISO strings parsed
+ * into Date objects.
+ *
+ * @param {Object} obj
+ * @return {Object}
+ */
+
+function traverse (input, strict) {
+  if (strict === undefined) strict = true;
+
+  if (is.object(input)) return object(input, strict);
+  if (is.array(input)) return array(input, strict);
+  return input;
+}
+
+/**
+ * Object traverser.
+ *
+ * @param {Object} obj
+ * @param {Boolean} strict
+ * @return {Object}
+ */
+
+function object (obj, strict) {
+  each(obj, function (key, val) {
+    if (isodate.is(val, strict)) {
+      obj[key] = isodate.parse(val);
+    } else if (is.object(val) || is.array(val)) {
+      traverse(val, strict);
+    }
+  });
+  return obj;
+}
+
+/**
+ * Array traverser.
+ *
+ * @param {Array} arr
+ * @param {Boolean} strict
+ * @return {Array}
+ */
+
+function array (arr, strict) {
+  each(arr, function (val, x) {
+    if (is.object(val)) {
+      traverse(val, strict);
+    } else if (isodate.is(val, strict)) {
+      arr[x] = isodate.parse(val);
+    }
+  });
+  return arr;
+}
+
+}, {"is":42,"isodate":43,"each":4}],
+42: [function(require, module, exports) {
+
+var isEmpty = require('is-empty');
+
+try {
+  var typeOf = require('type');
+} catch (e) {
+  var typeOf = require('component-type');
+}
+
+
+/**
+ * Types.
+ */
+
+var types = [
+  'arguments',
+  'array',
+  'boolean',
+  'date',
+  'element',
+  'function',
+  'null',
+  'number',
+  'object',
+  'regexp',
+  'string',
+  'undefined'
+];
+
+
+/**
+ * Expose type checkers.
+ *
+ * @param {Mixed} value
+ * @return {Boolean}
+ */
+
+for (var i = 0, type; type = types[i]; i++) exports[type] = generate(type);
+
+
+/**
+ * Add alias for `function` for old browsers.
+ */
+
+exports.fn = exports['function'];
+
+
+/**
+ * Expose `empty` check.
+ */
+
+exports.empty = isEmpty;
+
+
+/**
+ * Expose `nan` check.
+ */
+
+exports.nan = function (val) {
+  return exports.number(val) && val != val;
+};
+
+
+/**
+ * Generate a type checker.
+ *
+ * @param {String} type
+ * @return {Function}
+ */
+
+function generate (type) {
+  return function (value) {
+    return type === typeOf(value);
+  };
+}
+}, {"is-empty":44,"type":45,"component-type":45}],
+44: [function(require, module, exports) {
+
+/**
+ * Expose `isEmpty`.
+ */
+
+module.exports = isEmpty;
+
+
+/**
+ * Has.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+
+/**
+ * Test whether a value is "empty".
+ *
+ * @param {Mixed} val
+ * @return {Boolean}
+ */
+
+function isEmpty (val) {
+  if (null == val) return true;
+  if ('number' == typeof val) return 0 === val;
+  if (undefined !== val.length) return 0 === val.length;
+  for (var key in val) if (has.call(val, key)) return false;
+  return true;
+}
+}, {}],
+45: [function(require, module, exports) {
+/**
+ * toString ref.
+ */
+
+var toString = Object.prototype.toString;
+
+/**
+ * Return the type of `val`.
+ *
+ * @param {Mixed} val
+ * @return {String}
+ * @api public
+ */
+
+module.exports = function(val){
+  switch (toString.call(val)) {
+    case '[object Date]': return 'date';
+    case '[object RegExp]': return 'regexp';
+    case '[object Arguments]': return 'arguments';
+    case '[object Array]': return 'array';
+    case '[object Error]': return 'error';
+  }
+
+  if (val === null) return 'null';
+  if (val === undefined) return 'undefined';
+  if (val !== val) return 'nan';
+  if (val && val.nodeType === 1) return 'element';
+
+  val = val.valueOf
+    ? val.valueOf()
+    : Object.prototype.valueOf.apply(val)
+
+  return typeof val;
+};
+
+}, {}],
+43: [function(require, module, exports) {
+
+/**
+ * Matcher, slightly modified from:
+ *
+ * https://github.com/csnover/js-iso8601/blob/lax/iso8601.js
+ */
+
+var matcher = /^(\d{4})(?:-?(\d{2})(?:-?(\d{2}))?)?(?:([ T])(\d{2}):?(\d{2})(?::?(\d{2})(?:[,\.](\d{1,}))?)?(?:(Z)|([+\-])(\d{2})(?::?(\d{2}))?)?)?$/;
+
+
+/**
+ * Convert an ISO date string to a date. Fallback to native `Date.parse`.
+ *
+ * https://github.com/csnover/js-iso8601/blob/lax/iso8601.js
+ *
+ * @param {String} iso
+ * @return {Date}
+ */
+
+exports.parse = function (iso) {
+  var numericKeys = [1, 5, 6, 7, 11, 12];
+  var arr = matcher.exec(iso);
+  var offset = 0;
+
+  // fallback to native parsing
+  if (!arr) return new Date(iso);
+
+  // remove undefined values
+  for (var i = 0, val; val = numericKeys[i]; i++) {
+    arr[val] = parseInt(arr[val], 10) || 0;
+  }
+
+  // allow undefined days and months
+  arr[2] = parseInt(arr[2], 10) || 1;
+  arr[3] = parseInt(arr[3], 10) || 1;
+
+  // month is 0-11
+  arr[2]--;
+
+  // allow abitrary sub-second precision
+  arr[8] = arr[8]
+    ? (arr[8] + '00').substring(0, 3)
+    : 0;
+
+  // apply timezone if one exists
+  if (arr[4] == ' ') {
+    offset = new Date().getTimezoneOffset();
+  } else if (arr[9] !== 'Z' && arr[10]) {
+    offset = arr[11] * 60 + arr[12];
+    if ('+' == arr[10]) offset = 0 - offset;
+  }
+
+  var millis = Date.UTC(arr[1], arr[2], arr[3], arr[5], arr[6] + offset, arr[7], arr[8]);
+  return new Date(millis);
+};
+
+
+/**
+ * Checks whether a `string` is an ISO date string. `strict` mode requires that
+ * the date string at least have a year, month and date.
+ *
+ * @param {String} string
+ * @param {Boolean} strict
+ * @return {Boolean}
+ */
+
+exports.is = function (string, strict) {
+  if (strict && false === /^\d{4}-\d{2}-\d{2}/.test(string)) return false;
+  return matcher.test(string);
+};
+}, {}],
+4: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var type = require('type');
+
+/**
+ * HOP reference.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Iterate the given `obj` and invoke `fn(val, i)`.
+ *
+ * @param {String|Array|Object} obj
+ * @param {Function} fn
+ * @api public
+ */
+
+module.exports = function(obj, fn){
+  switch (type(obj)) {
+    case 'array':
+      return array(obj, fn);
+    case 'object':
+      if ('number' == typeof obj.length) return array(obj, fn);
+      return object(obj, fn);
+    case 'string':
+      return string(obj, fn);
+  }
+};
+
+/**
+ * Iterate string chars.
+ *
+ * @param {String} obj
+ * @param {Function} fn
+ * @api private
+ */
+
+function string(obj, fn) {
+  for (var i = 0; i < obj.length; ++i) {
+    fn(obj.charAt(i), i);
+  }
+}
+
+/**
+ * Iterate object keys.
+ *
+ * @param {Object} obj
+ * @param {Function} fn
+ * @api private
+ */
+
+function object(obj, fn) {
+  for (var key in obj) {
+    if (has.call(obj, key)) {
+      fn(key, obj[key]);
+    }
+  }
+}
+
+/**
+ * Iterate array-ish.
+ *
+ * @param {Array|Object} obj
+ * @param {Function} fn
+ * @api private
+ */
+
+function array(obj, fn) {
+  for (var i = 0; i < obj.length; ++i) {
+    fn(obj[i], i);
+  }
+}
+}, {"type":45}],
+37: [function(require, module, exports) {
+
+/**
+ * A few integrations are disabled by default. They must be explicitly
+ * enabled by setting options[Provider] = true.
+ */
+
+var disabled = {
+  Salesforce: true
+};
+
+/**
+ * Check whether an integration should be enabled by default.
+ *
+ * @param {String} integration
+ * @return {Boolean}
+ */
+
+module.exports = function (integration) {
+  return ! disabled[integration];
+};
+}, {}],
+38: [function(require, module, exports) {
+
+/**
+ * TODO: use component symlink, everywhere ?
+ */
+
+try {
+  exports.inherit = require('inherit');
+  exports.clone = require('clone');
+  exports.type = require('type');
+} catch (e) {
+  exports.inherit = require('inherit-component');
+  exports.clone = require('clone-component');
+  exports.type = require('type-component');
+}
+
+}, {"inherit":46,"clone":47,"type":45}],
+46: [function(require, module, exports) {
+
+module.exports = function(a, b){
+  var fn = function(){};
+  fn.prototype = b.prototype;
+  a.prototype = new fn;
+  a.prototype.constructor = a;
+};
+}, {}],
+47: [function(require, module, exports) {
+/**
+ * Module dependencies.
+ */
+
+var type;
+try {
+  type = require('component-type');
+} catch (_) {
+  type = require('type');
+}
+
+/**
+ * Module exports.
+ */
+
+module.exports = clone;
+
+/**
+ * Clones objects.
+ *
+ * @param {Mixed} any object
+ * @api public
+ */
+
+function clone(obj){
+  switch (type(obj)) {
+    case 'object':
+      var copy = {};
+      for (var key in obj) {
+        if (obj.hasOwnProperty(key)) {
+          copy[key] = clone(obj[key]);
+        }
+      }
+      return copy;
+
+    case 'array':
+      var copy = new Array(obj.length);
+      for (var i = 0, l = obj.length; i < l; i++) {
+        copy[i] = clone(obj[i]);
+      }
+      return copy;
+
+    case 'regexp':
+      // from millermedeiros/amd-utils - MIT
+      var flags = '';
+      flags += obj.multiline ? 'm' : '';
+      flags += obj.global ? 'g' : '';
+      flags += obj.ignoreCase ? 'i' : '';
+      return new RegExp(obj.source, flags);
+
+    case 'date':
+      return new Date(obj.getTime());
+
+    default: // string, number, boolean, …
+      return obj;
+  }
+}
+
+}, {"component-type":45,"type":45}],
+39: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var get = require('obj-case');
+
+/**
+ * Add address getters to `proto`.
+ *
+ * @param {Function} proto
+ */
+
+module.exports = function(proto){
+  proto.zip = trait('postalCode', 'zip');
+  proto.country = trait('country');
+  proto.street = trait('street');
+  proto.state = trait('state');
+  proto.city = trait('city');
+
+  function trait(a, b){
+    return function(){
+      var traits = this.traits();
+      var props = this.properties ? this.properties() : {};
+
+      return get(traits, 'address.' + a)
+        || get(traits, a)
+        || (b ? get(traits, 'address.' + b) : null)
+        || (b ? get(traits, b) : null)
+        || get(props, 'address.' + a)
+        || get(props, a)
+        || (b ? get(props, 'address.' + b) : null)
+        || (b ? get(props, b) : null);
+    };
+  }
+};
+
+}, {"obj-case":40}],
+40: [function(require, module, exports) {
+
+var identity = function(_){ return _; };
+
+
+/**
+ * Module exports, export
+ */
+
+module.exports = multiple(find);
+module.exports.find = module.exports;
+
+
+/**
+ * Export the replacement function, return the modified object
+ */
+
+module.exports.replace = function (obj, key, val, options) {
+  multiple(replace).call(this, obj, key, val, options);
+  return obj;
+};
+
+
+/**
+ * Export the delete function, return the modified object
+ */
+
+module.exports.del = function (obj, key, options) {
+  multiple(del).call(this, obj, key, null, options);
+  return obj;
+};
+
+
+/**
+ * Compose applying the function to a nested key
+ */
+
+function multiple (fn) {
+  return function (obj, path, val, options) {
+    var normalize = options && isFunction(options.normalizer) ? options.normalizer : defaultNormalize;
+    path = normalize(path);
+
+    var key;
+    var finished = false;
+
+    while (!finished) loop();
+
+    function loop() {
+      for (key in obj) {
+        var normalizedKey = normalize(key);
+        if (0 === path.indexOf(normalizedKey)) {
+          var temp = path.substr(normalizedKey.length);
+          if (temp.charAt(0) === '.' || temp.length === 0) {
+            path = temp.substr(1);
+            var child = obj[key];
+
+            // we're at the end and there is nothing.
+            if (null == child) {
+              finished = true;
+              return;
+            }
+
+            // we're at the end and there is something.
+            if (!path.length) {
+              finished = true;
+              return;
+            }
+
+            // step into child
+            obj = child;
+
+            // but we're done here
+            return;
+          }
+        }
+      }
+
+      key = undefined;
+      // if we found no matching properties
+      // on the current object, there's no match.
+      finished = true;
+    }
+
+    if (!key) return;
+    if (null == obj) return obj;
+
+    // the `obj` and `key` is one above the leaf object and key, so
+    // start object: { a: { 'b.c': 10 } }
+    // end object: { 'b.c': 10 }
+    // end key: 'b.c'
+    // this way, you can do `obj[key]` and get `10`.
+    return fn(obj, key, val);
+  };
+}
+
+
+/**
+ * Find an object by its key
+ *
+ * find({ first_name : 'Calvin' }, 'firstName')
+ */
+
+function find (obj, key) {
+  if (obj.hasOwnProperty(key)) return obj[key];
+}
+
+
+/**
+ * Delete a value for a given key
+ *
+ * del({ a : 'b', x : 'y' }, 'X' }) -> { a : 'b' }
+ */
+
+function del (obj, key) {
+  if (obj.hasOwnProperty(key)) delete obj[key];
+  return obj;
+}
+
+
+/**
+ * Replace an objects existing value with a new one
+ *
+ * replace({ a : 'b' }, 'a', 'c') -> { a : 'c' }
+ */
+
+function replace (obj, key, val) {
+  if (obj.hasOwnProperty(key)) obj[key] = val;
+  return obj;
+}
+
+/**
+ * Normalize a `dot.separated.path`.
+ *
+ * A.HELL(!*&#(!)O_WOR   LD.bar => ahelloworldbar
+ *
+ * @param {String} path
+ * @return {String}
+ */
+
+function defaultNormalize(path) {
+  return path.replace(/[^a-zA-Z0-9\.]+/g, '').toLowerCase();
+}
+
+/**
+ * Check if a value is a function.
+ *
+ * @param {*} val
+ * @return {boolean} Returns `true` if `val` is a function, otherwise `false`.
+ */
+
+function isFunction(val) {
+  return typeof val === 'function';
+}
+
+}, {}],
+41: [function(require, module, exports) {
+
+var is = require('is');
+var isodate = require('isodate');
+var milliseconds = require('./milliseconds');
+var seconds = require('./seconds');
+
+
+/**
+ * Returns a new Javascript Date object, allowing a variety of extra input types
+ * over the native Date constructor.
+ *
+ * @param {Date|String|Number} val
+ */
+
+module.exports = function newDate (val) {
+  if (is.date(val)) return val;
+  if (is.number(val)) return new Date(toMs(val));
+
+  // date strings
+  if (isodate.is(val)) return isodate.parse(val);
+  if (milliseconds.is(val)) return milliseconds.parse(val);
+  if (seconds.is(val)) return seconds.parse(val);
+
+  // fallback to Date.parse
+  return new Date(val);
+};
+
+
+/**
+ * If the number passed val is seconds from the epoch, turn it into milliseconds.
+ * Milliseconds would be greater than 31557600000 (December 31, 1970).
+ *
+ * @param {Number} num
+ */
+
+function toMs (num) {
+  if (num < 31557600000) return num * 1000;
+  return num;
+}
+}, {"is":48,"isodate":43,"./milliseconds":49,"./seconds":50}],
+48: [function(require, module, exports) {
+
+var isEmpty = require('is-empty')
+  , typeOf = require('type');
+
+
+/**
+ * Types.
+ */
+
+var types = [
+  'arguments',
+  'array',
+  'boolean',
+  'date',
+  'element',
+  'function',
+  'null',
+  'number',
+  'object',
+  'regexp',
+  'string',
+  'undefined'
+];
+
+
+/**
+ * Expose type checkers.
+ *
+ * @param {Mixed} value
+ * @return {Boolean}
+ */
+
+for (var i = 0, type; type = types[i]; i++) exports[type] = generate(type);
+
+
+/**
+ * Add alias for `function` for old browsers.
+ */
+
+exports.fn = exports['function'];
+
+
+/**
+ * Expose `empty` check.
+ */
+
+exports.empty = isEmpty;
+
+
+/**
+ * Expose `nan` check.
+ */
+
+exports.nan = function (val) {
+  return exports.number(val) && val != val;
+};
+
+
+/**
+ * Generate a type checker.
+ *
+ * @param {String} type
+ * @return {Function}
+ */
+
+function generate (type) {
+  return function (value) {
+    return type === typeOf(value);
+  };
+}
+}, {"is-empty":44,"type":45}],
+49: [function(require, module, exports) {
+
+/**
+ * Matcher.
+ */
+
+var matcher = /\d{13}/;
+
+
+/**
+ * Check whether a string is a millisecond date string.
+ *
+ * @param {String} string
+ * @return {Boolean}
+ */
+
+exports.is = function (string) {
+  return matcher.test(string);
+};
+
+
+/**
+ * Convert a millisecond string to a date.
+ *
+ * @param {String} millis
+ * @return {Date}
+ */
+
+exports.parse = function (millis) {
+  millis = parseInt(millis, 10);
+  return new Date(millis);
+};
+}, {}],
+50: [function(require, module, exports) {
+
+/**
+ * Matcher.
+ */
+
+var matcher = /\d{10}/;
+
+
+/**
+ * Check whether a string is a second date string.
+ *
+ * @param {String} string
+ * @return {Boolean}
+ */
+
+exports.is = function (string) {
+  return matcher.test(string);
+};
+
+
+/**
+ * Convert a second string to a date.
+ *
+ * @param {String} seconds
+ * @return {Date}
+ */
+
+exports.parse = function (seconds) {
+  var millis = parseInt(seconds, 10) * 1000;
+  return new Date(millis);
+};
+}, {}],
+30: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var inherit = require('./utils').inherit;
+var Facade = require('./facade');
+
+/**
+ * Expose `Alias` facade.
+ */
+
+module.exports = Alias;
+
+/**
+ * Initialize a new `Alias` facade with a `dictionary` of arguments.
+ *
+ * @param {Object} dictionary
+ *   @property {String} from
+ *   @property {String} to
+ *   @property {Object} options
+ */
+
+function Alias (dictionary) {
+  Facade.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Facade`.
+ */
+
+inherit(Alias, Facade);
+
+/**
+ * Return type of facade.
+ *
+ * @return {String}
+ */
+
+Alias.prototype.type =
+Alias.prototype.action = function () {
+  return 'alias';
+};
+
+/**
+ * Get `previousId`.
+ *
+ * @return {Mixed}
+ * @api public
+ */
+
+Alias.prototype.from =
+Alias.prototype.previousId = function(){
+  return this.field('previousId')
+    || this.field('from');
+};
+
+/**
+ * Get `userId`.
+ *
+ * @return {String}
+ * @api public
+ */
+
+Alias.prototype.to =
+Alias.prototype.userId = function(){
+  return this.field('userId')
+    || this.field('to');
+};
+
+}, {"./utils":38,"./facade":29}],
+31: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var inherit = require('./utils').inherit;
+var address = require('./address');
+var isEmail = require('is-email');
+var newDate = require('new-date');
+var Facade = require('./facade');
+
+/**
+ * Expose `Group` facade.
+ */
+
+module.exports = Group;
+
+/**
+ * Initialize a new `Group` facade with a `dictionary` of arguments.
+ *
+ * @param {Object} dictionary
+ *   @param {String} userId
+ *   @param {String} groupId
+ *   @param {Object} properties
+ *   @param {Object} options
+ */
+
+function Group (dictionary) {
+  Facade.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Facade`
+ */
+
+inherit(Group, Facade);
+
+/**
+ * Get the facade's action.
+ */
+
+Group.prototype.type =
+Group.prototype.action = function () {
+  return 'group';
+};
+
+/**
+ * Setup some basic proxies.
+ */
+
+Group.prototype.groupId = Facade.field('groupId');
+
+/**
+ * Get created or createdAt.
+ *
+ * @return {Date}
+ */
+
+Group.prototype.created = function(){
+  var created = this.proxy('traits.createdAt')
+    || this.proxy('traits.created')
+    || this.proxy('properties.createdAt')
+    || this.proxy('properties.created');
+
+  if (created) return newDate(created);
+};
+
+/**
+ * Get the group's email, falling back to the group ID if it's a valid email.
+ *
+ * @return {String}
+ */
+
+Group.prototype.email = function () {
+  var email = this.proxy('traits.email');
+  if (email) return email;
+  var groupId = this.groupId();
+  if (isEmail(groupId)) return groupId;
+};
+
+/**
+ * Get the group's traits.
+ *
+ * @param {Object} aliases
+ * @return {Object}
+ */
+
+Group.prototype.traits = function (aliases) {
+  var ret = this.properties();
+  var id = this.groupId();
+  aliases = aliases || {};
+
+  if (id) ret.id = id;
+
+  for (var alias in aliases) {
+    var value = null == this[alias]
+      ? this.proxy('traits.' + alias)
+      : this[alias]();
+    if (null == value) continue;
+    ret[aliases[alias]] = value;
+    delete ret[alias];
+  }
+
+  return ret;
+};
+
+/**
+ * Special traits.
+ */
+
+Group.prototype.name = Facade.proxy('traits.name');
+Group.prototype.industry = Facade.proxy('traits.industry');
+Group.prototype.employees = Facade.proxy('traits.employees');
+
+/**
+ * Get traits or properties.
+ *
+ * TODO: remove me
+ *
+ * @return {Object}
+ */
+
+Group.prototype.properties = function(){
+  return this.field('traits')
+    || this.field('properties')
+    || {};
+};
+
+}, {"./utils":38,"./address":39,"is-email":51,"new-date":41,"./facade":29}],
+51: [function(require, module, exports) {
+
+/**
+ * Expose `isEmail`.
+ */
+
+module.exports = isEmail;
+
+
+/**
+ * Email address matcher.
+ */
+
+var matcher = /.+\@.+\..+/;
+
+
+/**
+ * Loosely validate an email address.
+ *
+ * @param {String} string
+ * @return {Boolean}
+ */
+
+function isEmail (string) {
+  return matcher.test(string);
+}
+}, {}],
+32: [function(require, module, exports) {
+
+var address = require('./address');
+var Facade = require('./facade');
+var isEmail = require('is-email');
+var newDate = require('new-date');
+var utils = require('./utils');
+var get = require('obj-case');
+var trim = require('trim');
+var inherit = utils.inherit;
+var clone = utils.clone;
+var type = utils.type;
+
+/**
+ * Expose `Idenfity` facade.
+ */
+
+module.exports = Identify;
+
+/**
+ * Initialize a new `Identify` facade with a `dictionary` of arguments.
+ *
+ * @param {Object} dictionary
+ *   @param {String} userId
+ *   @param {String} sessionId
+ *   @param {Object} traits
+ *   @param {Object} options
+ */
+
+function Identify (dictionary) {
+  Facade.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Facade`.
+ */
+
+inherit(Identify, Facade);
+
+/**
+ * Get the facade's action.
+ */
+
+Identify.prototype.type =
+Identify.prototype.action = function () {
+  return 'identify';
+};
+
+/**
+ * Get the user's traits.
+ *
+ * @param {Object} aliases
+ * @return {Object}
+ */
+
+Identify.prototype.traits = function (aliases) {
+  var ret = this.field('traits') || {};
+  var id = this.userId();
+  aliases = aliases || {};
+
+  if (id) ret.id = id;
+
+  for (var alias in aliases) {
+    var value = null == this[alias]
+      ? this.proxy('traits.' + alias)
+      : this[alias]();
+    if (null == value) continue;
+    ret[aliases[alias]] = value;
+    if (alias !== aliases[alias]) delete ret[alias];
+  }
+
+  return ret;
+};
+
+/**
+ * Get the user's email, falling back to their user ID if it's a valid email.
+ *
+ * @return {String}
+ */
+
+Identify.prototype.email = function () {
+  var email = this.proxy('traits.email');
+  if (email) return email;
+
+  var userId = this.userId();
+  if (isEmail(userId)) return userId;
+};
+
+/**
+ * Get the user's created date, optionally looking for `createdAt` since lots of
+ * people do that instead.
+ *
+ * @return {Date or Undefined}
+ */
+
+Identify.prototype.created = function () {
+  var created = this.proxy('traits.created') || this.proxy('traits.createdAt');
+  if (created) return newDate(created);
+};
+
+/**
+ * Get the company created date.
+ *
+ * @return {Date or undefined}
+ */
+
+Identify.prototype.companyCreated = function(){
+  var created = this.proxy('traits.company.created')
+    || this.proxy('traits.company.createdAt');
+
+  if (created) return newDate(created);
+};
+
+/**
+ * Get the user's name, optionally combining a first and last name if that's all
+ * that was provided.
+ *
+ * @return {String or Undefined}
+ */
+
+Identify.prototype.name = function () {
+  var name = this.proxy('traits.name');
+  if (typeof name === 'string') return trim(name);
+
+  var firstName = this.firstName();
+  var lastName = this.lastName();
+  if (firstName && lastName) return trim(firstName + ' ' + lastName);
+};
+
+/**
+ * Get the user's first name, optionally splitting it out of a single name if
+ * that's all that was provided.
+ *
+ * @return {String or Undefined}
+ */
+
+Identify.prototype.firstName = function () {
+  var firstName = this.proxy('traits.firstName');
+  if (typeof firstName === 'string') return trim(firstName);
+
+  var name = this.proxy('traits.name');
+  if (typeof name === 'string') return trim(name).split(' ')[0];
+};
+
+/**
+ * Get the user's last name, optionally splitting it out of a single name if
+ * that's all that was provided.
+ *
+ * @return {String or Undefined}
+ */
+
+Identify.prototype.lastName = function () {
+  var lastName = this.proxy('traits.lastName');
+  if (typeof lastName === 'string') return trim(lastName);
+
+  var name = this.proxy('traits.name');
+  if (typeof name !== 'string') return;
+
+  var space = trim(name).indexOf(' ');
+  if (space === -1) return;
+
+  return trim(name.substr(space + 1));
+};
+
+/**
+ * Get the user's unique id.
+ *
+ * @return {String or undefined}
+ */
+
+Identify.prototype.uid = function(){
+  return this.userId()
+    || this.username()
+    || this.email();
+};
+
+/**
+ * Get description.
+ *
+ * @return {String}
+ */
+
+Identify.prototype.description = function(){
+  return this.proxy('traits.description')
+    || this.proxy('traits.background');
+};
+
+/**
+ * Get the age.
+ *
+ * If the age is not explicitly set
+ * the method will compute it from `.birthday()`
+ * if possible.
+ *
+ * @return {Number}
+ */
+
+Identify.prototype.age = function(){
+  var date = this.birthday();
+  var age = get(this.traits(), 'age');
+  if (null != age) return age;
+  if ('date' != type(date)) return;
+  var now = new Date;
+  return now.getFullYear() - date.getFullYear();
+};
+
+/**
+ * Get the avatar.
+ *
+ * .photoUrl needed because help-scout
+ * implementation uses `.avatar || .photoUrl`.
+ *
+ * .avatarUrl needed because trakio uses it.
+ *
+ * @return {Mixed}
+ */
+
+Identify.prototype.avatar = function(){
+  var traits = this.traits();
+  return get(traits, 'avatar')
+    || get(traits, 'photoUrl')
+    || get(traits, 'avatarUrl');
+};
+
+/**
+ * Get the position.
+ *
+ * .jobTitle needed because some integrations use it.
+ *
+ * @return {Mixed}
+ */
+
+Identify.prototype.position = function(){
+  var traits = this.traits();
+  return get(traits, 'position') || get(traits, 'jobTitle');
+};
+
+/**
+ * Setup sme basic "special" trait proxies.
+ */
+
+Identify.prototype.username = Facade.proxy('traits.username');
+Identify.prototype.website = Facade.one('traits.website');
+Identify.prototype.websites = Facade.multi('traits.website');
+Identify.prototype.phone = Facade.one('traits.phone');
+Identify.prototype.phones = Facade.multi('traits.phone');
+Identify.prototype.address = Facade.proxy('traits.address');
+Identify.prototype.gender = Facade.proxy('traits.gender');
+Identify.prototype.birthday = Facade.proxy('traits.birthday');
+
+}, {"./address":39,"./facade":29,"is-email":51,"new-date":41,"./utils":38,"obj-case":40,"trim":52}],
+52: [function(require, module, exports) {
+
+exports = module.exports = trim;
+
+function trim(str){
+  if (str.trim) return str.trim();
+  return str.replace(/^\s*|\s*$/g, '');
+}
+
+exports.left = function(str){
+  if (str.trimLeft) return str.trimLeft();
+  return str.replace(/^\s*/, '');
+};
+
+exports.right = function(str){
+  if (str.trimRight) return str.trimRight();
+  return str.replace(/\s*$/, '');
+};
+
+}, {}],
+33: [function(require, module, exports) {
+
+var inherit = require('./utils').inherit;
+var clone = require('./utils').clone;
+var type = require('./utils').type;
+var Facade = require('./facade');
+var Identify = require('./identify');
+var isEmail = require('is-email');
+var get = require('obj-case');
+
+/**
+ * Expose `Track` facade.
+ */
+
+module.exports = Track;
+
+/**
+ * Initialize a new `Track` facade with a `dictionary` of arguments.
+ *
+ * @param {object} dictionary
+ *   @property {String} event
+ *   @property {String} userId
+ *   @property {String} sessionId
+ *   @property {Object} properties
+ *   @property {Object} options
+ */
+
+function Track (dictionary) {
+  Facade.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Facade`.
+ */
+
+inherit(Track, Facade);
+
+/**
+ * Return the facade's action.
+ *
+ * @return {String}
+ */
+
+Track.prototype.type =
+Track.prototype.action = function () {
+  return 'track';
+};
+
+/**
+ * Setup some basic proxies.
+ */
+
+Track.prototype.event = Facade.field('event');
+Track.prototype.value = Facade.proxy('properties.value');
+
+/**
+ * Misc
+ */
+
+Track.prototype.category = Facade.proxy('properties.category');
+
+/**
+ * Ecommerce
+ */
+
+Track.prototype.id = Facade.proxy('properties.id');
+Track.prototype.sku = Facade.proxy('properties.sku');
+Track.prototype.tax = Facade.proxy('properties.tax');
+Track.prototype.name = Facade.proxy('properties.name');
+Track.prototype.price = Facade.proxy('properties.price');
+Track.prototype.total = Facade.proxy('properties.total');
+Track.prototype.coupon = Facade.proxy('properties.coupon');
+Track.prototype.shipping = Facade.proxy('properties.shipping');
+Track.prototype.discount = Facade.proxy('properties.discount');
+
+/**
+ * Description
+ */
+
+Track.prototype.description = Facade.proxy('properties.description');
+
+/**
+ * Plan
+ */
+
+Track.prototype.plan = Facade.proxy('properties.plan');
+
+/**
+ * Order id.
+ *
+ * @return {String}
+ * @api public
+ */
+
+Track.prototype.orderId = function(){
+  return this.proxy('properties.id')
+    || this.proxy('properties.orderId');
+};
+
+/**
+ * Get subtotal.
+ *
+ * @return {Number}
+ */
+
+Track.prototype.subtotal = function(){
+  var subtotal = get(this.properties(), 'subtotal');
+  var total = this.total();
+  var n;
+
+  if (subtotal) return subtotal;
+  if (!total) return 0;
+  if (n = this.tax()) total -= n;
+  if (n = this.shipping()) total -= n;
+  if (n = this.discount()) total += n;
+
+  return total;
+};
+
+/**
+ * Get products.
+ *
+ * @return {Array}
+ */
+
+Track.prototype.products = function(){
+  var props = this.properties();
+  var products = get(props, 'products');
+  return 'array' == type(products)
+    ? products
+    : [];
+};
+
+/**
+ * Get quantity.
+ *
+ * @return {Number}
+ */
+
+Track.prototype.quantity = function(){
+  var props = this.obj.properties || {};
+  return props.quantity || 1;
+};
+
+/**
+ * Get currency.
+ *
+ * @return {String}
+ */
+
+Track.prototype.currency = function(){
+  var props = this.obj.properties || {};
+  return props.currency || 'USD';
+};
+
+/**
+ * BACKWARDS COMPATIBILITY: should probably re-examine where these come from.
+ */
+
+Track.prototype.referrer = Facade.proxy('properties.referrer');
+Track.prototype.query = Facade.proxy('options.query');
+
+/**
+ * Get the call's properties.
+ *
+ * @param {Object} aliases
+ * @return {Object}
+ */
+
+Track.prototype.properties = function (aliases) {
+  var ret = this.field('properties') || {};
+  aliases = aliases || {};
+
+  for (var alias in aliases) {
+    var value = null == this[alias]
+      ? this.proxy('properties.' + alias)
+      : this[alias]();
+    if (null == value) continue;
+    ret[aliases[alias]] = value;
+    delete ret[alias];
+  }
+
+  return ret;
+};
+
+/**
+ * Get the call's username.
+ *
+ * @return {String or Undefined}
+ */
+
+Track.prototype.username = function () {
+  return this.proxy('traits.username') ||
+         this.proxy('properties.username') ||
+         this.userId() ||
+         this.sessionId();
+};
+
+/**
+ * Get the call's email, using an the user ID if it's a valid email.
+ *
+ * @return {String or Undefined}
+ */
+
+Track.prototype.email = function () {
+  var email = this.proxy('traits.email');
+  email = email || this.proxy('properties.email');
+  if (email) return email;
+
+  var userId = this.userId();
+  if (isEmail(userId)) return userId;
+};
+
+/**
+ * Get the call's revenue, parsing it from a string with an optional leading
+ * dollar sign.
+ *
+ * For products/services that don't have shipping and are not directly taxed,
+ * they only care about tracking `revenue`. These are things like
+ * SaaS companies, who sell monthly subscriptions. The subscriptions aren't
+ * taxed directly, and since it's a digital product, it has no shipping.
+ *
+ * The only case where there's a difference between `revenue` and `total`
+ * (in the context of analytics) is on ecommerce platforms, where they want
+ * the `revenue` function to actually return the `total` (which includes
+ * tax and shipping, total = subtotal + tax + shipping). This is probably
+ * because on their backend they assume tax and shipping has been applied to
+ * the value, and so can get the revenue on their own.
+ *
+ * @return {Number}
+ */
+
+Track.prototype.revenue = function () {
+  var revenue = this.proxy('properties.revenue');
+  var event = this.event();
+
+  // it's always revenue, unless it's called during an order completion.
+  if (!revenue && event && event.match(/completed ?order/i)) {
+    revenue = this.proxy('properties.total');
+  }
+
+  return currency(revenue);
+};
+
+/**
+ * Get cents.
+ *
+ * @return {Number}
+ */
+
+Track.prototype.cents = function(){
+  var revenue = this.revenue();
+  return 'number' != typeof revenue
+    ? this.value() || 0
+    : revenue * 100;
+};
+
+/**
+ * A utility to turn the pieces of a track call into an identify. Used for
+ * integrations with super properties or rate limits.
+ *
+ * TODO: remove me.
+ *
+ * @return {Facade}
+ */
+
+Track.prototype.identify = function () {
+  var json = this.json();
+  json.traits = this.traits();
+  return new Identify(json);
+};
+
+/**
+ * Get float from currency value.
+ *
+ * @param {Mixed} val
+ * @return {Number}
+ */
+
+function currency(val) {
+  if (!val) return;
+  if (typeof val === 'number') return val;
+  if (typeof val !== 'string') return;
+
+  val = val.replace(/\$/g, '');
+  val = parseFloat(val);
+
+  if (!isNaN(val)) return val;
+}
+
+}, {"./utils":38,"./facade":29,"./identify":32,"is-email":51,"obj-case":40}],
+34: [function(require, module, exports) {
+
+var inherit = require('./utils').inherit;
+var Facade = require('./facade');
+var Track = require('./track');
+
+/**
+ * Expose `Page` facade
+ */
+
+module.exports = Page;
+
+/**
+ * Initialize new `Page` facade with `dictionary`.
+ *
+ * @param {Object} dictionary
+ *   @param {String} category
+ *   @param {String} name
+ *   @param {Object} traits
+ *   @param {Object} options
+ */
+
+function Page(dictionary){
+  Facade.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Facade`
+ */
+
+inherit(Page, Facade);
+
+/**
+ * Get the facade's action.
+ *
+ * @return {String}
+ */
+
+Page.prototype.type =
+Page.prototype.action = function(){
+  return 'page';
+};
+
+/**
+ * Fields
+ */
+
+Page.prototype.category = Facade.field('category');
+Page.prototype.name = Facade.field('name');
+
+/**
+ * Proxies.
+ */
+
+Page.prototype.title = Facade.proxy('properties.title');
+Page.prototype.path = Facade.proxy('properties.path');
+Page.prototype.url = Facade.proxy('properties.url');
+
+/**
+ * Referrer.
+ */
+
+Page.prototype.referrer = function(){
+  return this.proxy('properties.referrer')
+    || this.proxy('context.referrer.url');
+};
+
+/**
+ * Get the page properties mixing `category` and `name`.
+ *
+ * @return {Object}
+ */
+
+Page.prototype.properties = function(){
+  var props = this.field('properties') || {};
+  var category = this.category();
+  var name = this.name();
+  if (category) props.category = category;
+  if (name) props.name = name;
+  return props;
+};
+
+/**
+ * Get the page fullName.
+ *
+ * @return {String}
+ */
+
+Page.prototype.fullName = function(){
+  var category = this.category();
+  var name = this.name();
+  return name && category
+    ? category + ' ' + name
+    : name;
+};
+
+/**
+ * Get event with `name`.
+ *
+ * @return {String}
+ */
+
+Page.prototype.event = function(name){
+  return name
+    ? 'Viewed ' + name + ' Page'
+    : 'Loaded a Page';
+};
+
+/**
+ * Convert this Page to a Track facade with `name`.
+ *
+ * @param {String} name
+ * @return {Track}
+ */
+
+Page.prototype.track = function(name){
+  var props = this.properties();
+  return new Track({
+    event: this.event(name),
+    timestamp: this.timestamp(),
+    context: this.context(),
+    properties: props
+  });
+};
+
+}, {"./utils":38,"./facade":29,"./track":33}],
+35: [function(require, module, exports) {
+
+var inherit = require('./utils').inherit;
+var Page = require('./page');
+var Track = require('./track');
+
+/**
+ * Expose `Screen` facade
+ */
+
+module.exports = Screen;
+
+/**
+ * Initialize new `Screen` facade with `dictionary`.
+ *
+ * @param {Object} dictionary
+ *   @param {String} category
+ *   @param {String} name
+ *   @param {Object} traits
+ *   @param {Object} options
+ */
+
+function Screen(dictionary){
+  Page.call(this, dictionary);
+}
+
+/**
+ * Inherit from `Page`
+ */
+
+inherit(Screen, Page);
+
+/**
+ * Get the facade's action.
+ *
+ * @return {String}
+ * @api public
+ */
+
+Screen.prototype.type =
+Screen.prototype.action = function(){
+  return 'screen';
+};
+
+/**
+ * Get event with `name`.
+ *
+ * @param {String} name
+ * @return {String}
+ * @api public
+ */
+
+Screen.prototype.event = function(name){
+  return name
+    ? 'Viewed ' + name + ' Screen'
+    : 'Loaded a Screen';
+};
+
+/**
+ * Convert this Screen.
+ *
+ * @param {String} name
+ * @return {Track}
+ * @api public
+ */
+
+Screen.prototype.track = function(name){
+  var props = this.properties();
+  return new Track({
+    event: this.event(name),
+    timestamp: this.timestamp(),
+    context: this.context(),
+    properties: props
+  });
+};
+
+}, {"./utils":38,"./page":34,"./track":33}],
+8: [function(require, module, exports) {
+
+module.exports = function after (times, func) {
+  // After 0, really?
+  if (times <= 0) return func();
+
+  // That's more like it.
+  return function() {
+    if (--times < 1) {
+      return func.apply(this, arguments);
+    }
+  };
+};
+}, {}],
+9: [function(require, module, exports) {
+
+try {
+  var bind = require('bind');
+} catch (e) {
+  var bind = require('bind-component');
+}
+
+var bindAll = require('bind-all');
+
+
+/**
+ * Expose `bind`.
+ */
+
+module.exports = exports = bind;
+
+
+/**
+ * Expose `bindAll`.
+ */
+
+exports.all = bindAll;
+
+
+/**
+ * Expose `bindMethods`.
+ */
+
+exports.methods = bindMethods;
+
+
+/**
+ * Bind `methods` on `obj` to always be called with the `obj` as context.
+ *
+ * @param {Object} obj
+ * @param {String} methods...
+ */
+
+function bindMethods (obj, methods) {
+  methods = [].slice.call(arguments, 1);
+  for (var i = 0, method; method = methods[i]; i++) {
+    obj[method] = bind(obj, obj[method]);
+  }
+  return obj;
+}
+}, {"bind":53,"bind-all":54}],
+53: [function(require, module, exports) {
+/**
+ * Slice reference.
+ */
+
+var slice = [].slice;
+
+/**
+ * Bind `obj` to `fn`.
+ *
+ * @param {Object} obj
+ * @param {Function|String} fn or string
+ * @return {Function}
+ * @api public
+ */
+
+module.exports = function(obj, fn){
+  if ('string' == typeof fn) fn = obj[fn];
+  if ('function' != typeof fn) throw new Error('bind() requires a function');
+  var args = slice.call(arguments, 2);
+  return function(){
+    return fn.apply(obj, args.concat(slice.call(arguments)));
+  }
+};
+
+}, {}],
+54: [function(require, module, exports) {
+
+try {
+  var bind = require('bind');
+  var type = require('type');
+} catch (e) {
+  var bind = require('bind-component');
+  var type = require('type-component');
+}
+
+module.exports = function (obj) {
+  for (var key in obj) {
+    var val = obj[key];
+    if (type(val) === 'function') obj[key] = bind(obj, obj[key]);
+  }
+  return obj;
+};
+}, {"bind":53,"type":45}],
+10: [function(require, module, exports) {
+var next = require('next-tick');
+
+
+/**
+ * Expose `callback`.
+ */
+
+module.exports = callback;
+
+
+/**
+ * Call an `fn` back synchronously if it exists.
+ *
+ * @param {Function} fn
+ */
+
+function callback (fn) {
+  if ('function' === typeof fn) fn();
+}
+
+
+/**
+ * Call an `fn` back asynchronously if it exists. If `wait` is ommitted, the
+ * `fn` will be called on next tick.
+ *
+ * @param {Function} fn
+ * @param {Number} wait (optional)
+ */
+
+callback.async = function (fn, wait) {
+  if ('function' !== typeof fn) return;
+  if (!wait) return next(fn);
+  setTimeout(fn, wait);
+};
+
+
+/**
+ * Symmetry.
+ */
+
+callback.sync = callback;
+
+}, {"next-tick":55}],
+55: [function(require, module, exports) {
+"use strict"
+
+if (typeof setImmediate == 'function') {
+  module.exports = function(f){ setImmediate(f) }
+}
+// legacy node.js
+else if (typeof process != 'undefined' && typeof process.nextTick == 'function') {
+  module.exports = process.nextTick
+}
+// fallback for other environments / postMessage behaves badly on IE8
+else if (typeof window == 'undefined' || window.ActiveXObject || !window.postMessage) {
+  module.exports = function(f){ setTimeout(f) };
+} else {
+  var q = [];
+
+  window.addEventListener('message', function(){
+    var i = 0;
+    while (i < q.length) {
+      try { q[i++](); }
+      catch (e) {
+        q = q.slice(i);
+        window.postMessage('tic!', '*');
+        throw e;
+      }
+    }
+    q.length = 0;
+  }, true);
+
+  module.exports = function(fn){
+    if (!q.length) window.postMessage('tic!', '*');
+    q.push(fn);
+  }
+}
+
+}, {}],
+11: [function(require, module, exports) {
 
 /**
  * Module dependencies.
@@ -286,19 +3400,149 @@ function clone(obj){
   }
 }
 
-});
-require.register("component-cookie/index.js", function(exports, require, module){
-/**
- * Encode.
- */
-
-var encode = encodeURIComponent;
+}, {"type":45}],
+12: [function(require, module, exports) {
 
 /**
- * Decode.
+ * Module dependencies.
  */
 
-var decode = decodeURIComponent;
+var bind = require('bind');
+var clone = require('clone');
+var cookie = require('cookie');
+var debug = require('debug')('analytics.js:cookie');
+var defaults = require('defaults');
+var json = require('json');
+var topDomain = require('top-domain');
+
+
+/**
+ * Initialize a new `Cookie` with `options`.
+ *
+ * @param {Object} options
+ */
+
+function Cookie(options) {
+  this.options(options);
+}
+
+
+/**
+ * Get or set the cookie options.
+ *
+ * @param {Object} options
+ *   @field {Number} maxage (1 year)
+ *   @field {String} domain
+ *   @field {String} path
+ *   @field {Boolean} secure
+ */
+
+Cookie.prototype.options = function(options) {
+  if (arguments.length === 0) return this._options;
+
+  options = options || {};
+
+  var domain = '.' + topDomain(window.location.href);
+  if (domain === '.') domain = null;
+
+  this._options = defaults(options, {
+    // default to a year
+    maxage: 31536000000,
+    path: '/',
+    domain: domain
+  });
+
+  // http://curl.haxx.se/rfc/cookie_spec.html
+  // https://publicsuffix.org/list/effective_tld_names.dat
+  //
+  // try setting a dummy cookie with the options
+  // if the cookie isn't set, it probably means
+  // that the domain is on the public suffix list
+  // like myapp.herokuapp.com or localhost / ip.
+  this.set('ajs:test', true);
+  if (!this.get('ajs:test')) {
+    debug('fallback to domain=null');
+    this._options.domain = null;
+  }
+  this.remove('ajs:test');
+};
+
+
+/**
+ * Set a `key` and `value` in our cookie.
+ *
+ * @param {String} key
+ * @param {Object} value
+ * @return {Boolean} saved
+ */
+
+Cookie.prototype.set = function(key, value) {
+  try {
+    value = json.stringify(value);
+    cookie(key, value, clone(this._options));
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+
+/**
+ * Get a value from our cookie by `key`.
+ *
+ * @param {String} key
+ * @return {Object} value
+ */
+
+Cookie.prototype.get = function(key) {
+  try {
+    var value = cookie(key);
+    value = value ? json.parse(value) : null;
+    return value;
+  } catch (e) {
+    return null;
+  }
+};
+
+
+/**
+ * Remove a value from our cookie by `key`.
+ *
+ * @param {String} key
+ * @return {Boolean} removed
+ */
+
+Cookie.prototype.remove = function(key) {
+  try {
+    cookie(key, null, clone(this._options));
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+
+/**
+ * Expose the cookie singleton.
+ */
+
+module.exports = bind.all(new Cookie());
+
+
+/**
+ * Expose the `Cookie` constructor.
+ */
+
+module.exports.Cookie = Cookie;
+
+}, {"bind":9,"clone":11,"cookie":56,"debug":13,"defaults":14,"json":57,"top-domain":58}],
+56: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var debug = require('debug')('cookie');
 
 /**
  * Set or get cookie `name` with `value` and `options` object.
@@ -392,511 +3636,373 @@ function parse(str) {
   return obj;
 }
 
-});
-require.register("component-each/index.js", function(exports, require, module){
+/**
+ * Encode.
+ */
 
+function encode(value){
+  try {
+    return encodeURIComponent(value);
+  } catch (e) {
+    debug('error `encode(%o)` - %o', value, e)
+  }
+}
+
+/**
+ * Decode.
+ */
+
+function decode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    debug('error `decode(%o)` - %o', value, e)
+  }
+}
+
+}, {"debug":13}],
+13: [function(require, module, exports) {
+if ('undefined' == typeof window) {
+  module.exports = require('./lib/debug');
+} else {
+  module.exports = require('./debug');
+}
+
+}, {"./lib/debug":59,"./debug":60}],
+59: [function(require, module, exports) {
 /**
  * Module dependencies.
  */
 
-var type = require('type');
+var tty = require('tty');
 
 /**
- * HOP reference.
+ * Expose `debug()` as the module.
  */
 
-var has = Object.prototype.hasOwnProperty;
+module.exports = debug;
 
 /**
- * Iterate the given `obj` and invoke `fn(val, i)`.
- *
- * @param {String|Array|Object} obj
- * @param {Function} fn
- * @api public
+ * Enabled debuggers.
  */
 
-module.exports = function(obj, fn){
-  switch (type(obj)) {
-    case 'array':
-      return array(obj, fn);
-    case 'object':
-      if ('number' == typeof obj.length) return array(obj, fn);
-      return object(obj, fn);
-    case 'string':
-      return string(obj, fn);
-  }
-};
+var names = []
+  , skips = [];
 
-/**
- * Iterate string chars.
- *
- * @param {String} obj
- * @param {Function} fn
- * @api private
- */
-
-function string(obj, fn) {
-  for (var i = 0; i < obj.length; ++i) {
-    fn(obj.charAt(i), i);
-  }
-}
-
-/**
- * Iterate object keys.
- *
- * @param {Object} obj
- * @param {Function} fn
- * @api private
- */
-
-function object(obj, fn) {
-  for (var key in obj) {
-    if (has.call(obj, key)) {
-      fn(key, obj[key]);
+(process.env.DEBUG || '')
+  .split(/[\s,]+/)
+  .forEach(function(name){
+    name = name.replace('*', '.*?');
+    if (name[0] === '-') {
+      skips.push(new RegExp('^' + name.substr(1) + '$'));
+    } else {
+      names.push(new RegExp('^' + name + '$'));
     }
-  }
-}
+  });
 
 /**
- * Iterate array-ish.
- *
- * @param {Array|Object} obj
- * @param {Function} fn
- * @api private
+ * Colors.
  */
 
-function array(obj, fn) {
-  for (var i = 0; i < obj.length; ++i) {
-    fn(obj[i], i);
-  }
-}
-});
-require.register("component-event/index.js", function(exports, require, module){
+var colors = [6, 2, 3, 4, 5, 1];
 
 /**
- * Bind `el` event `type` to `fn`.
- *
- * @param {Element} el
- * @param {String} type
- * @param {Function} fn
- * @param {Boolean} capture
- * @return {Function}
- * @api public
+ * Previous debug() call.
  */
 
-exports.bind = function(el, type, fn, capture){
-  if (el.addEventListener) {
-    el.addEventListener(type, fn, capture || false);
-  } else {
-    el.attachEvent('on' + type, fn);
-  }
-  return fn;
-};
+var prev = {};
 
 /**
- * Unbind `el` event `type`'s callback `fn`.
- *
- * @param {Element} el
- * @param {String} type
- * @param {Function} fn
- * @param {Boolean} capture
- * @return {Function}
- * @api public
+ * Previously assigned color.
  */
 
-exports.unbind = function(el, type, fn, capture){
-  if (el.removeEventListener) {
-    el.removeEventListener(type, fn, capture || false);
-  } else {
-    el.detachEvent('on' + type, fn);
-  }
-  return fn;
-};
-
-});
-require.register("component-inherit/index.js", function(exports, require, module){
-
-module.exports = function(a, b){
-  var fn = function(){};
-  fn.prototype = b.prototype;
-  a.prototype = new fn;
-  a.prototype.constructor = a;
-};
-});
-require.register("component-object/index.js", function(exports, require, module){
+var prevColor = 0;
 
 /**
- * HOP ref.
+ * Is stdout a TTY? Colored output is disabled when `true`.
  */
 
-var has = Object.prototype.hasOwnProperty;
+var isatty = tty.isatty(2);
 
 /**
- * Return own keys in `obj`.
+ * Select a color.
  *
- * @param {Object} obj
- * @return {Array}
- * @api public
- */
-
-exports.keys = Object.keys || function(obj){
-  var keys = [];
-  for (var key in obj) {
-    if (has.call(obj, key)) {
-      keys.push(key);
-    }
-  }
-  return keys;
-};
-
-/**
- * Return own values in `obj`.
- *
- * @param {Object} obj
- * @return {Array}
- * @api public
- */
-
-exports.values = function(obj){
-  var vals = [];
-  for (var key in obj) {
-    if (has.call(obj, key)) {
-      vals.push(obj[key]);
-    }
-  }
-  return vals;
-};
-
-/**
- * Merge `b` into `a`.
- *
- * @param {Object} a
- * @param {Object} b
- * @return {Object} a
- * @api public
- */
-
-exports.merge = function(a, b){
-  for (var key in b) {
-    if (has.call(b, key)) {
-      a[key] = b[key];
-    }
-  }
-  return a;
-};
-
-/**
- * Return length of `obj`.
- *
- * @param {Object} obj
  * @return {Number}
- * @api public
+ * @api private
  */
 
-exports.length = function(obj){
-  return exports.keys(obj).length;
-};
-
-/**
- * Check if `obj` is empty.
- *
- * @param {Object} obj
- * @return {Boolean}
- * @api public
- */
-
-exports.isEmpty = function(obj){
-  return 0 == exports.length(obj);
-};
-});
-require.register("component-trim/index.js", function(exports, require, module){
-
-exports = module.exports = trim;
-
-function trim(str){
-  return str.replace(/^\s*|\s*$/g, '');
+function color() {
+  return colors[prevColor++ % colors.length];
 }
 
-exports.left = function(str){
-  return str.replace(/^\s*/, '');
-};
-
-exports.right = function(str){
-  return str.replace(/\s*$/, '');
-};
-
-});
-require.register("component-querystring/index.js", function(exports, require, module){
-
 /**
- * Module dependencies.
- */
-
-var trim = require('trim');
-
-/**
- * Parse the given query `str`.
+ * Humanize the given `ms`.
  *
- * @param {String} str
- * @return {Object}
- * @api public
- */
-
-exports.parse = function(str){
-  if ('string' != typeof str) return {};
-
-  str = trim(str);
-  if ('' == str) return {};
-
-  var obj = {};
-  var pairs = str.split('&');
-  for (var i = 0; i < pairs.length; i++) {
-    var parts = pairs[i].split('=');
-    obj[parts[0]] = null == parts[1]
-      ? ''
-      : decodeURIComponent(parts[1]);
-  }
-
-  return obj;
-};
-
-/**
- * Stringify the given `obj`.
- *
- * @param {Object} obj
+ * @param {Number} m
  * @return {String}
+ * @api private
+ */
+
+function humanize(ms) {
+  var sec = 1000
+    , min = 60 * 1000
+    , hour = 60 * min;
+
+  if (ms >= hour) return (ms / hour).toFixed(1) + 'h';
+  if (ms >= min) return (ms / min).toFixed(1) + 'm';
+  if (ms >= sec) return (ms / sec | 0) + 's';
+  return ms + 'ms';
+}
+
+/**
+ * Create a debugger with the given `name`.
+ *
+ * @param {String} name
+ * @return {Type}
  * @api public
  */
 
-exports.stringify = function(obj){
-  if (!obj) return '';
-  var pairs = [];
-  for (var key in obj) {
-    pairs.push(encodeURIComponent(key) + '=' + encodeURIComponent(obj[key]));
-  }
-  return pairs.join('&');
-};
+function debug(name) {
+  function disabled(){}
+  disabled.enabled = false;
 
-});
-require.register("component-type/index.js", function(exports, require, module){
+  var match = skips.some(function(re){
+    return re.test(name);
+  });
+
+  if (match) return disabled;
+
+  match = names.some(function(re){
+    return re.test(name);
+  });
+
+  if (!match) return disabled;
+  var c = color();
+
+  function colored(fmt) {
+    fmt = coerce(fmt);
+
+    var curr = new Date;
+    var ms = curr - (prev[name] || curr);
+    prev[name] = curr;
+
+    fmt = '  \u001b[9' + c + 'm' + name + ' '
+      + '\u001b[3' + c + 'm\u001b[90m'
+      + fmt + '\u001b[3' + c + 'm'
+      + ' +' + humanize(ms) + '\u001b[0m';
+
+    console.error.apply(this, arguments);
+  }
+
+  function plain(fmt) {
+    fmt = coerce(fmt);
+
+    fmt = new Date().toUTCString()
+      + ' ' + name + ' ' + fmt;
+    console.error.apply(this, arguments);
+  }
+
+  colored.enabled = plain.enabled = true;
+
+  return isatty || process.env.DEBUG_COLORS
+    ? colored
+    : plain;
+}
 
 /**
- * toString ref.
+ * Coerce `val`.
  */
 
-var toString = Object.prototype.toString;
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
+}, {}],
+60: [function(require, module, exports) {
 
 /**
- * Return the type of `val`.
+ * Expose `debug()` as the module.
+ */
+
+module.exports = debug;
+
+/**
+ * Create a debugger with the given `name`.
  *
- * @param {Mixed} val
+ * @param {String} name
+ * @return {Type}
+ * @api public
+ */
+
+function debug(name) {
+  if (!debug.enabled(name)) return function(){};
+
+  return function(fmt){
+    fmt = coerce(fmt);
+
+    var curr = new Date;
+    var ms = curr - (debug[name] || curr);
+    debug[name] = curr;
+
+    fmt = name
+      + ' '
+      + fmt
+      + ' +' + debug.humanize(ms);
+
+    // This hackery is required for IE8
+    // where `console.log` doesn't have 'apply'
+    window.console
+      && console.log
+      && Function.prototype.apply.call(console.log, console, arguments);
+  }
+}
+
+/**
+ * The currently active debug mode names.
+ */
+
+debug.names = [];
+debug.skips = [];
+
+/**
+ * Enables a debug mode by name. This can include modes
+ * separated by a colon and wildcards.
+ *
+ * @param {String} name
+ * @api public
+ */
+
+debug.enable = function(name) {
+  try {
+    localStorage.debug = name;
+  } catch(e){}
+
+  var split = (name || '').split(/[\s,]+/)
+    , len = split.length;
+
+  for (var i = 0; i < len; i++) {
+    name = split[i].replace('*', '.*?');
+    if (name[0] === '-') {
+      debug.skips.push(new RegExp('^' + name.substr(1) + '$'));
+    }
+    else {
+      debug.names.push(new RegExp('^' + name + '$'));
+    }
+  }
+};
+
+/**
+ * Disable debug output.
+ *
+ * @api public
+ */
+
+debug.disable = function(){
+  debug.enable('');
+};
+
+/**
+ * Humanize the given `ms`.
+ *
+ * @param {Number} m
  * @return {String}
- * @api public
+ * @api private
  */
 
-module.exports = function(val){
-  switch (toString.call(val)) {
-    case '[object Function]': return 'function';
-    case '[object Date]': return 'date';
-    case '[object RegExp]': return 'regexp';
-    case '[object Arguments]': return 'arguments';
-    case '[object Array]': return 'array';
-    case '[object String]': return 'string';
-  }
+debug.humanize = function(ms) {
+  var sec = 1000
+    , min = 60 * 1000
+    , hour = 60 * min;
 
-  if (val === null) return 'null';
-  if (val === undefined) return 'undefined';
-  if (val && val.nodeType === 1) return 'element';
-  if (val === Object(val)) return 'object';
-
-  return typeof val;
-};
-
-});
-require.register("component-url/index.js", function(exports, require, module){
-
-/**
- * Parse the given `url`.
- *
- * @param {String} str
- * @return {Object}
- * @api public
- */
-
-exports.parse = function(url){
-  var a = document.createElement('a');
-  a.href = url;
-  return {
-    href: a.href,
-    host: a.host || location.host,
-    port: ('0' === a.port || '' === a.port) ? location.port : a.port,
-    hash: a.hash,
-    hostname: a.hostname || location.hostname,
-    pathname: a.pathname.charAt(0) != '/' ? '/' + a.pathname : a.pathname,
-    protocol: !a.protocol || ':' == a.protocol ? location.protocol : a.protocol,
-    search: a.search,
-    query: a.search.slice(1)
-  };
+  if (ms >= hour) return (ms / hour).toFixed(1) + 'h';
+  if (ms >= min) return (ms / min).toFixed(1) + 'm';
+  if (ms >= sec) return (ms / sec | 0) + 's';
+  return ms + 'ms';
 };
 
 /**
- * Check if `url` is absolute.
+ * Returns true if the given mode name is enabled, false otherwise.
  *
- * @param {String} url
+ * @param {String} name
  * @return {Boolean}
  * @api public
  */
 
-exports.isAbsolute = function(url){
-  return 0 == url.indexOf('//') || !!~url.indexOf('://');
-};
-
-/**
- * Check if `url` is relative.
- *
- * @param {String} url
- * @return {Boolean}
- * @api public
- */
-
-exports.isRelative = function(url){
-  return !exports.isAbsolute(url);
-};
-
-/**
- * Check if `url` is cross domain.
- *
- * @param {String} url
- * @return {Boolean}
- * @api public
- */
-
-exports.isCrossDomain = function(url){
-  url = exports.parse(url);
-  return url.hostname !== location.hostname
-    || url.port !== location.port
-    || url.protocol !== location.protocol;
-};
-});
-require.register("segmentio-after/index.js", function(exports, require, module){
-
-module.exports = function after (times, func) {
-  // After 0, really?
-  if (times <= 0) return func();
-
-  // That's more like it.
-  return function() {
-    if (--times < 1) {
-      return func.apply(this, arguments);
+debug.enabled = function(name) {
+  for (var i = 0, len = debug.skips.length; i < len; i++) {
+    if (debug.skips[i].test(name)) {
+      return false;
     }
-  };
-};
-});
-require.register("segmentio-alias/index.js", function(exports, require, module){
-
-module.exports = function alias (object, aliases) {
-    // For each of our aliases, rename our object's keys.
-    for (var oldKey in aliases) {
-        var newKey = aliases[oldKey];
-        if (object[oldKey] !== undefined) {
-            object[newKey] = object[oldKey];
-            delete object[oldKey];
-        }
-    }
-};
-});
-require.register("component-bind/index.js", function(exports, require, module){
-
-/**
- * Slice reference.
- */
-
-var slice = [].slice;
-
-/**
- * Bind `obj` to `fn`.
- *
- * @param {Object} obj
- * @param {Function|String} fn or string
- * @return {Function}
- * @api public
- */
-
-module.exports = function(obj, fn){
-  if ('string' == typeof fn) fn = obj[fn];
-  if ('function' != typeof fn) throw new Error('bind() requires a function');
-  var args = [].slice.call(arguments, 2);
-  return function(){
-    return fn.apply(obj, args.concat(slice.call(arguments)));
   }
-};
-
-});
-require.register("segmentio-bind-all/index.js", function(exports, require, module){
-
-var bind   = require('bind')
-  , type   = require('type');
-
-
-module.exports = function (obj) {
-  for (var key in obj) {
-    var val = obj[key];
-    if (type(val) === 'function') obj[key] = bind(obj, obj[key]);
-  }
-  return obj;
-};
-});
-require.register("segmentio-canonical/index.js", function(exports, require, module){
-module.exports = function canonical () {
-  var tags = document.getElementsByTagName('link');
-  for (var i = 0, tag; tag = tags[i]; i++) {
-    if ('canonical' == tag.getAttribute('rel')) return tag.getAttribute('href');
-  }
-};
-});
-require.register("segmentio-extend/index.js", function(exports, require, module){
-
-module.exports = function extend (object) {
-    // Takes an unlimited number of extenders.
-    var args = Array.prototype.slice.call(arguments, 1);
-
-    // For each extender, copy their properties on our object.
-    for (var i = 0, source; source = args[i]; i++) {
-        if (!source) continue;
-        for (var property in source) {
-            object[property] = source[property];
-        }
-    }
-
-    return object;
-};
-});
-require.register("segmentio-is-email/index.js", function(exports, require, module){
-
-module.exports = function isEmail (string) {
-    return (/.+\@.+\..+/).test(string);
-};
-});
-require.register("segmentio-is-meta/index.js", function(exports, require, module){
-module.exports = function isMeta (e) {
-    if (e.metaKey || e.altKey || e.ctrlKey || e.shiftKey) return true;
-
-    // Logic that handles checks for the middle mouse button, based
-    // on [jQuery](https://github.com/jquery/jquery/blob/master/src/event.js#L466).
-    var which = e.which, button = e.button;
-    if (!which && button !== undefined) {
-      return (!button & 1) && (!button & 2) && (button & 4);
-    } else if (which === 2) {
+  for (var i = 0, len = debug.names.length; i < len; i++) {
+    if (debug.names[i].test(name)) {
       return true;
     }
-
-    return false;
+  }
+  return false;
 };
-});
-require.register("component-json-fallback/index.js", function(exports, require, module){
+
+/**
+ * Coerce `val`.
+ */
+
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
+// persist
+
+try {
+  if (window.localStorage) debug.enable(localStorage.debug);
+} catch(e){}
+
+}, {}],
+14: [function(require, module, exports) {
+'use strict';
+
+/**
+ * Merge default values.
+ *
+ * @param {Object} dest
+ * @param {Object} defaults
+ * @return {Object}
+ * @api public
+ */
+var defaults = function (dest, src, recursive) {
+  for (var prop in src) {
+    if (recursive && dest[prop] instanceof Object && src[prop] instanceof Object) {
+      dest[prop] = defaults(dest[prop], src[prop], true);
+    } else if (! (prop in dest)) {
+      dest[prop] = src[prop];
+    }
+  }
+
+  return dest;
+};
+
+/**
+ * Expose `defaults`.
+ */
+module.exports = defaults;
+
+}, {}],
+57: [function(require, module, exports) {
+
+var json = window.JSON || {};
+var stringify = json.stringify;
+var parse = json.parse;
+
+module.exports = parse && stringify
+  ? JSON
+  : require('json-fallback');
+
+}, {"json-fallback":61}],
+61: [function(require, module, exports) {
 /*
     json2.js
-    2011-10-19
+    2014-02-04
 
     Public Domain.
 
@@ -1055,10 +4161,10 @@ require.register("component-json-fallback/index.js", function(exports, require, 
 // Create a JSON object only if one does not already exist. We create the
 // methods in a closure to avoid creating global variables.
 
-var JSON = {};
-
 (function () {
     'use strict';
+
+    var JSON = module.exports = {};
 
     function f(n) {
         // Format integers to have at least two digits.
@@ -1067,7 +4173,7 @@ var JSON = {};
 
     if (typeof Date.prototype.toJSON !== 'function') {
 
-        Date.prototype.toJSON = function (key) {
+        Date.prototype.toJSON = function () {
 
             return isFinite(this.valueOf())
                 ? this.getUTCFullYear()     + '-' +
@@ -1081,24 +4187,16 @@ var JSON = {};
 
         String.prototype.toJSON      =
             Number.prototype.toJSON  =
-            Boolean.prototype.toJSON = function (key) {
+            Boolean.prototype.toJSON = function () {
                 return this.valueOf();
             };
     }
 
-    var cx = /[\u0000\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g,
-        escapable = /[\\\"\x00-\x1f\x7f-\x9f\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g,
+    var cx,
+        escapable,
         gap,
         indent,
-        meta = {    // table of character substitutions
-            '\b': '\\b',
-            '\t': '\\t',
-            '\n': '\\n',
-            '\f': '\\f',
-            '\r': '\\r',
-            '"' : '\\"',
-            '\\': '\\\\'
-        },
+        meta,
         rep;
 
 
@@ -1250,6 +4348,16 @@ var JSON = {};
 // If the JSON object does not yet have a stringify method, give it one.
 
     if (typeof JSON.stringify !== 'function') {
+        escapable = /[\\\"\x00-\x1f\x7f-\x9f\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g;
+        meta = {    // table of character substitutions
+            '\b': '\\b',
+            '\t': '\\t',
+            '\n': '\\n',
+            '\f': '\\f',
+            '\r': '\\r',
+            '"' : '\\"',
+            '\\': '\\\\'
+        };
         JSON.stringify = function (value, replacer, space) {
 
 // The stringify method takes a value and an optional replacer, and an optional
@@ -1297,6 +4405,7 @@ var JSON = {};
 // If the JSON object does not yet have a parse method, give it one.
 
     if (typeof JSON.parse !== 'function') {
+        cx = /[\u0000\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g;
         JSON.parse = function (text, reviver) {
 
 // The parse method takes a text and an optional reviver function, and returns
@@ -1379,215 +4488,806 @@ var JSON = {};
     }
 }());
 
-module.exports = JSON
-});
-require.register("segmentio-json/index.js", function(exports, require, module){
-
-module.exports = 'undefined' == typeof JSON
-  ? require('json-fallback')
-  : JSON;
-
-});
-require.register("segmentio-load-date/index.js", function(exports, require, module){
-
-
-/*
- * Load date.
- *
- * For reference: http://www.html5rocks.com/en/tutorials/webperformance/basics/
- */
-
-var time = new Date()
-  , perf = window.performance;
-
-if (perf && perf.timing && perf.timing.responseEnd) {
-  time = new Date(perf.timing.responseEnd);
-}
-
-module.exports = time;
-});
-require.register("segmentio-load-script/index.js", function(exports, require, module){
-var type = require('type');
-
-
-module.exports = function loadScript (options, callback) {
-    if (!options) throw new Error('Cant load nothing...');
-
-    // Allow for the simplest case, just passing a `src` string.
-    if (type(options) === 'string') options = { src : options };
-
-    var https = document.location.protocol === 'https:';
-
-    // If you use protocol relative URLs, third-party scripts like Google
-    // Analytics break when testing with `file:` so this fixes that.
-    if (options.src && options.src.indexOf('//') === 0) {
-        options.src = https ? 'https:' + options.src : 'http:' + options.src;
-    }
-
-    // Allow them to pass in different URLs depending on the protocol.
-    if (https && options.https) options.src = options.https;
-    else if (!https && options.http) options.src = options.http;
-
-    // Make the `<script>` element and insert it before the first script on the
-    // page, which is guaranteed to exist since this Javascript is running.
-    var script = document.createElement('script');
-    script.type = 'text/javascript';
-    script.async = true;
-    script.src = options.src;
-
-    var firstScript = document.getElementsByTagName('script')[0];
-    firstScript.parentNode.insertBefore(script, firstScript);
-
-    // If we have a callback, attach event handlers, even in IE. Based off of
-    // the Third-Party Javascript script loading example:
-    // https://github.com/thirdpartyjs/thirdpartyjs-code/blob/master/examples/templates/02/loading-files/index.html
-    if (callback && type(callback) === 'function') {
-        if (script.addEventListener) {
-            script.addEventListener('load', callback, false);
-        } else if (script.attachEvent) {
-            script.attachEvent('onreadystatechange', function () {
-                if (/complete|loaded/.test(script.readyState)) callback();
-            });
-        }
-    }
-
-    // Return the script element in case they want to do anything special, like
-    // give it an ID or attributes.
-    return script;
-};
-});
-require.register("segmentio-type/index.js", function(exports, require, module){
+}, {}],
+58: [function(require, module, exports) {
 
 /**
- * toString ref.
+ * Module dependencies.
  */
 
-var toString = Object.prototype.toString;
+var parse = require('url').parse;
+var cookie = require('cookie');
 
 /**
- * Return the type of `val`.
+ * Expose `domain`
+ */
+
+exports = module.exports = domain;
+
+/**
+ * Expose `cookie` for testing.
+ */
+
+exports.cookie = cookie;
+
+/**
+ * Get the top domain.
  *
- * @param {Mixed} val
+ * The function constructs the levels of domain
+ * and attempts to set a global cookie on each one
+ * when it succeeds it returns the top level domain.
+ *
+ * The method returns an empty string when the hostname
+ * is an ip or `localhost`.
+ *
+ * Example levels:
+ *
+ *      domain.levels('http://www.google.co.uk');
+ *      // => ["co.uk", "google.co.uk", "www.google.co.uk"]
+ * 
+ * Example:
+ * 
+ *      domain('http://localhost:3000/baz');
+ *      // => ''
+ *      domain('http://dev:3000/baz');
+ *      // => ''
+ *      domain('http://127.0.0.1:3000/baz');
+ *      // => ''
+ *      domain('http://segment.io/baz');
+ *      // => 'segment.io'
+ * 
+ * @param {String} url
  * @return {String}
  * @api public
  */
 
-module.exports = function(val){
-  switch (toString.call(val)) {
-    case '[object Function]': return 'function';
-    case '[object Date]': return 'date';
-    case '[object RegExp]': return 'regexp';
-    case '[object Arguments]': return 'arguments';
-    case '[object Array]': return 'array';
-    case '[object String]': return 'string';
+function domain(url){
+  var cookie = exports.cookie;
+  var levels = exports.levels(url);
+
+  // Lookup the real top level one.
+  for (var i = 0; i < levels.length; ++i) {
+    var cname = '__tld__';
+    var domain = levels[i];
+    var opts = { domain: '.' + domain };
+
+    cookie(cname, 1, opts);
+    if (cookie(cname)) {
+      cookie(cname, null, opts);
+      return domain
+    }
   }
 
-  if (val === null) return 'null';
-  if (val === undefined) return 'undefined';
-  if (val && val.nodeType === 1) return 'element';
-  if (val === Object(val)) return 'object';
-
-  return typeof val;
+  return '';
 };
 
-});
-require.register("segmentio-new-date/index.js", function(exports, require, module){
-var type = require('type');
-
-
 /**
- * Returns a new Javascript Date object, allowing a variety of extra input types
- * over the native one.
+ * Levels returns all levels of the given url.
  *
- * @param {Date|String|Number} input
+ * @param {String} url
+ * @return {Array}
+ * @api public
  */
 
-module.exports = function newDate (input) {
+domain.levels = function(url){
+  var host = parse(url).hostname;
+  var parts = host.split('.');
+  var last = parts[parts.length-1];
+  var levels = [];
 
-  // Convert input from seconds to milliseconds.
-  input = toMilliseconds(input);
-
-  // By default, delegate to Date, which will return `Invalid Date`s if wrong.
-  var date = new Date(input);
-
-  // If we have a string that the Date constructor couldn't parse, convert it.
-  if (isNaN(date.getTime()) && 'string' === type(input)) {
-    var milliseconds = toMilliseconds(parseInt(input, 10));
-    date = new Date(milliseconds);
+  // Ip address.
+  if (4 == parts.length && parseInt(last, 10) == last) {
+    return levels;
   }
 
-  return date;
+  // Localhost.
+  if (1 >= parts.length) {
+    return levels;
+  }
+
+  // Create levels.
+  for (var i = parts.length-2; 0 <= i; --i) {
+    levels.push(parts.slice(i).join('.'));
+  }
+
+  return levels;
 };
 
+}, {"url":62,"cookie":63}],
+62: [function(require, module, exports) {
 
 /**
- * If the number passed in is seconds from the epoch, turn it into milliseconds.
- * Milliseconds would be greater than 31557600000 (December 31, 1970).
+ * Parse the given `url`.
  *
- * @param seconds
+ * @param {String} str
+ * @return {Object}
+ * @api public
  */
 
-function toMilliseconds (seconds) {
-  if ('number' === type(seconds) && seconds < 31557600000) return seconds * 1000;
-  return seconds;
+exports.parse = function(url){
+  var a = document.createElement('a');
+  a.href = url;
+  return {
+    href: a.href,
+    host: a.host || location.host,
+    port: ('0' === a.port || '' === a.port) ? port(a.protocol) : a.port,
+    hash: a.hash,
+    hostname: a.hostname || location.hostname,
+    pathname: a.pathname.charAt(0) != '/' ? '/' + a.pathname : a.pathname,
+    protocol: !a.protocol || ':' == a.protocol ? location.protocol : a.protocol,
+    search: a.search,
+    query: a.search.slice(1)
+  };
+};
+
+/**
+ * Check if `url` is absolute.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isAbsolute = function(url){
+  return 0 == url.indexOf('//') || !!~url.indexOf('://');
+};
+
+/**
+ * Check if `url` is relative.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isRelative = function(url){
+  return !exports.isAbsolute(url);
+};
+
+/**
+ * Check if `url` is cross domain.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isCrossDomain = function(url){
+  url = exports.parse(url);
+  var location = exports.parse(window.location.href);
+  return url.hostname !== location.hostname
+    || url.port !== location.port
+    || url.protocol !== location.protocol;
+};
+
+/**
+ * Return default port for `protocol`.
+ *
+ * @param  {String} protocol
+ * @return {String}
+ * @api private
+ */
+function port (protocol){
+  switch (protocol) {
+    case 'http:':
+      return 80;
+    case 'https:':
+      return 443;
+    default:
+      return location.port;
+  }
 }
-});
-require.register("segmentio-on-body/index.js", function(exports, require, module){
-var each = require('each');
 
+}, {}],
+63: [function(require, module, exports) {
 
 /**
- * Cache whether `<body>` exists.
+ * Module dependencies.
  */
 
-var body = false;
-
-
-/**
- * Callbacks to call when the body exists.
- */
-
-var callbacks = [];
-
+var debug = require('debug')('cookie');
 
 /**
- * Export a way to add handlers to be invoked once the body exists.
+ * Set or get cookie `name` with `value` and `options` object.
  *
- * @param {Function} callback  A function to call when the body exists.
+ * @param {String} name
+ * @param {String} value
+ * @param {Object} options
+ * @return {Mixed}
+ * @api public
  */
 
-module.exports = function onBody (callback) {
-  if (body) {
-    call(callback);
+module.exports = function(name, value, options){
+  switch (arguments.length) {
+    case 3:
+    case 2:
+      return set(name, value, options);
+    case 1:
+      return get(name);
+    default:
+      return all();
+  }
+};
+
+/**
+ * Set cookie `name` to `value`.
+ *
+ * @param {String} name
+ * @param {String} value
+ * @param {Object} options
+ * @api private
+ */
+
+function set(name, value, options) {
+  options = options || {};
+  var str = encode(name) + '=' + encode(value);
+
+  if (null == value) options.maxage = -1;
+
+  if (options.maxage) {
+    options.expires = new Date(+new Date + options.maxage);
+  }
+
+  if (options.path) str += '; path=' + options.path;
+  if (options.domain) str += '; domain=' + options.domain;
+  if (options.expires) str += '; expires=' + options.expires.toUTCString();
+  if (options.secure) str += '; secure';
+
+  document.cookie = str;
+}
+
+/**
+ * Return all cookies.
+ *
+ * @return {Object}
+ * @api private
+ */
+
+function all() {
+  var str;
+  try {
+    str = document.cookie;
+  } catch (err) {
+    if (typeof console !== 'undefined' && typeof console.error === 'function') {
+      console.error(err.stack || err);
+    }
+    return {};
+  }
+  return parse(str);
+}
+
+/**
+ * Get cookie `name`.
+ *
+ * @param {String} name
+ * @return {String}
+ * @api private
+ */
+
+function get(name) {
+  return all()[name];
+}
+
+/**
+ * Parse cookie `str`.
+ *
+ * @param {String} str
+ * @return {Object}
+ * @api private
+ */
+
+function parse(str) {
+  var obj = {};
+  var pairs = str.split(/ *; */);
+  var pair;
+  if ('' == pairs[0]) return obj;
+  for (var i = 0; i < pairs.length; ++i) {
+    pair = pairs[i].split('=');
+    obj[decode(pair[0])] = decode(pair[1]);
+  }
+  return obj;
+}
+
+/**
+ * Encode.
+ */
+
+function encode(value){
+  try {
+    return encodeURIComponent(value);
+  } catch (e) {
+    debug('error `encode(%o)` - %o', value, e)
+  }
+}
+
+/**
+ * Decode.
+ */
+
+function decode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    debug('error `decode(%o)` - %o', value, e)
+  }
+}
+
+}, {"debug":13}],
+15: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var Entity = require('./entity');
+var bind = require('bind');
+var debug = require('debug')('analytics:group');
+var inherit = require('inherit');
+
+/**
+ * Group defaults
+ */
+
+Group.defaults = {
+  persist: true,
+  cookie: {
+    key: 'ajs_group_id'
+  },
+  localStorage: {
+    key: 'ajs_group_properties'
+  }
+};
+
+
+/**
+ * Initialize a new `Group` with `options`.
+ *
+ * @param {Object} options
+ */
+
+function Group(options) {
+  this.defaults = Group.defaults;
+  this.debug = debug;
+  Entity.call(this, options);
+}
+
+
+/**
+ * Inherit `Entity`
+ */
+
+inherit(Group, Entity);
+
+
+/**
+ * Expose the group singleton.
+ */
+
+module.exports = bind.all(new Group());
+
+
+/**
+ * Expose the `Group` constructor.
+ */
+
+module.exports.Group = Group;
+
+}, {"./entity":64,"bind":9,"debug":13,"inherit":65}],
+64: [function(require, module, exports) {
+
+var clone = require('clone');
+var cookie = require('./cookie');
+var debug = require('debug')('analytics:entity');
+var defaults = require('defaults');
+var extend = require('extend');
+var memory = require('./memory');
+var store = require('./store');
+var isodateTraverse = require('isodate-traverse');
+
+
+/**
+ * Expose `Entity`
+ */
+
+module.exports = Entity;
+
+
+/**
+ * Initialize new `Entity` with `options`.
+ *
+ * @param {Object} options
+ */
+
+function Entity(options) {
+  this.options(options);
+  this.initialize();
+}
+
+/**
+ * Initialize picks the storage.
+ *
+ * Checks to see if cookies can be set
+ * otherwise fallsback to localStorage.
+ */
+
+Entity.prototype.initialize = function() {
+  cookie.set('ajs:cookies', true);
+
+  // cookies are enabled.
+  if (cookie.get('ajs:cookies')) {
+    cookie.remove('ajs:cookies');
+    this._storage = cookie;
+    return;
+  }
+
+  // localStorage is enabled.
+  if (store.enabled) {
+    this._storage = store;
+    return;
+  }
+
+  // fallback to memory storage.
+  debug('warning using memory store both cookies and localStorage are disabled');
+  this._storage = memory;
+};
+
+/**
+ * Get the storage.
+ */
+
+Entity.prototype.storage = function() {
+  return this._storage;
+};
+
+
+/**
+ * Get or set storage `options`.
+ *
+ * @param {Object} options
+ *   @property {Object} cookie
+ *   @property {Object} localStorage
+ *   @property {Boolean} persist (default: `true`)
+ */
+
+Entity.prototype.options = function(options) {
+  if (arguments.length === 0) return this._options;
+  this._options = defaults(options || {}, this.defaults || {});
+};
+
+
+/**
+ * Get or set the entity's `id`.
+ *
+ * @param {String} id
+ */
+
+Entity.prototype.id = function(id) {
+  switch (arguments.length) {
+    case 0: return this._getId();
+    case 1: return this._setId(id);
+    default:
+      // No default case
+  }
+};
+
+
+/**
+ * Get the entity's id.
+ *
+ * @return {String}
+ */
+
+Entity.prototype._getId = function() {
+  var ret = this._options.persist
+    ? this.storage().get(this._options.cookie.key)
+    : this._id;
+  return ret === undefined ? null : ret;
+};
+
+
+/**
+ * Set the entity's `id`.
+ *
+ * @param {String} id
+ */
+
+Entity.prototype._setId = function(id) {
+  if (this._options.persist) {
+    this.storage().set(this._options.cookie.key, id);
   } else {
-    callbacks.push(callback);
+    this._id = id;
   }
 };
 
 
 /**
- * Set an interval to check for `document.body`.
+ * Get or set the entity's `traits`.
+ *
+ * BACKWARDS COMPATIBILITY: aliased to `properties`
+ *
+ * @param {Object} traits
  */
 
-var interval = setInterval(function () {
-  if (!document.body) return;
-  body = true;
-  each(callbacks, call);
-  clearInterval(interval);
-}, 5);
+Entity.prototype.properties = Entity.prototype.traits = function(traits) {
+  switch (arguments.length) {
+    case 0: return this._getTraits();
+    case 1: return this._setTraits(traits);
+    default:
+      // No default case
+  }
+};
 
 
 /**
- * Call a callback, passing it the body.
+ * Get the entity's traits. Always convert ISO date strings into real dates,
+ * since they aren't parsed back from local storage.
  *
- * @param {Function} callback  The callback to call.
+ * @return {Object}
  */
 
-function call (callback) {
-  callback(document.body);
+Entity.prototype._getTraits = function() {
+  var ret = this._options.persist ? store.get(this._options.localStorage.key) : this._traits;
+  return ret ? isodateTraverse(clone(ret)) : {};
+};
+
+
+/**
+ * Set the entity's `traits`.
+ *
+ * @param {Object} traits
+ */
+
+Entity.prototype._setTraits = function(traits) {
+  traits = traits || {};
+  if (this._options.persist) {
+    store.set(this._options.localStorage.key, traits);
+  } else {
+    this._traits = traits;
+  }
+};
+
+
+/**
+ * Identify the entity with an `id` and `traits`. If we it's the same entity,
+ * extend the existing `traits` instead of overwriting.
+ *
+ * @param {String} id
+ * @param {Object} traits
+ */
+
+Entity.prototype.identify = function(id, traits) {
+  traits = traits || {};
+  var current = this.id();
+  if (current === null || current === id) traits = extend(this.traits(), traits);
+  if (id) this.id(id);
+  this.debug('identify %o, %o', id, traits);
+  this.traits(traits);
+  this.save();
+};
+
+
+/**
+ * Save the entity to local storage and the cookie.
+ *
+ * @return {Boolean}
+ */
+
+Entity.prototype.save = function() {
+  if (!this._options.persist) return false;
+  cookie.set(this._options.cookie.key, this.id());
+  store.set(this._options.localStorage.key, this.traits());
+  return true;
+};
+
+
+/**
+ * Log the entity out, reseting `id` and `traits` to defaults.
+ */
+
+Entity.prototype.logout = function() {
+  this.id(null);
+  this.traits({});
+  cookie.remove(this._options.cookie.key);
+  store.remove(this._options.localStorage.key);
+};
+
+
+/**
+ * Reset all entity state, logging out and returning options to defaults.
+ */
+
+Entity.prototype.reset = function() {
+  this.logout();
+  this.options({});
+};
+
+
+/**
+ * Load saved entity `id` or `traits` from storage.
+ */
+
+Entity.prototype.load = function() {
+  this.id(cookie.get(this._options.cookie.key));
+  this.traits(store.get(this._options.localStorage.key));
+};
+
+
+}, {"clone":11,"./cookie":12,"debug":13,"defaults":14,"extend":66,"./memory":19,"./store":26,"isodate-traverse":36}],
+66: [function(require, module, exports) {
+
+module.exports = function extend (object) {
+    // Takes an unlimited number of extenders.
+    var args = Array.prototype.slice.call(arguments, 1);
+
+    // For each extender, copy their properties on our object.
+    for (var i = 0, source; source = args[i]; i++) {
+        if (!source) continue;
+        for (var property in source) {
+            object[property] = source[property];
+        }
+    }
+
+    return object;
+};
+}, {}],
+19: [function(require, module, exports) {
+/* eslint consistent-return:1 */
+
+/**
+ * Module Dependencies.
+ */
+
+var bind = require('bind');
+var clone = require('clone');
+
+/**
+ * HOP.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Expose `Memory`
+ */
+
+module.exports = bind.all(new Memory());
+
+/**
+ * Initialize `Memory` store
+ */
+
+function Memory(){
+  this.store = {};
 }
-});
-require.register("segmentio-store.js/store.js", function(exports, require, module){
+
+/**
+ * Set a `key` and `value`.
+ *
+ * @param {String} key
+ * @param {Mixed} value
+ * @return {Boolean}
+ */
+
+Memory.prototype.set = function(key, value){
+  this.store[key] = clone(value);
+  return true;
+};
+
+/**
+ * Get a `key`.
+ *
+ * @param {String} key
+ */
+
+Memory.prototype.get = function(key){
+  if (!has.call(this.store, key)) return;
+  return clone(this.store[key]);
+};
+
+/**
+ * Remove a `key`.
+ *
+ * @param {String} key
+ * @return {Boolean}
+ */
+
+Memory.prototype.remove = function(key){
+  delete this.store[key];
+  return true;
+};
+
+}, {"bind":9,"clone":11}],
+26: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var bind = require('bind');
+var defaults = require('defaults');
+var store = require('store.js');
+
+/**
+ * Initialize a new `Store` with `options`.
+ *
+ * @param {Object} options
+ */
+
+function Store(options) {
+  this.options(options);
+}
+
+/**
+ * Set the `options` for the store.
+ *
+ * @param {Object} options
+ *   @field {Boolean} enabled (true)
+ */
+
+Store.prototype.options = function(options) {
+  if (arguments.length === 0) return this._options;
+
+  options = options || {};
+  defaults(options, { enabled: true });
+
+  this.enabled = options.enabled && store.enabled;
+  this._options = options;
+};
+
+
+/**
+ * Set a `key` and `value` in local storage.
+ *
+ * @param {string} key
+ * @param {Object} value
+ */
+
+Store.prototype.set = function(key, value) {
+  if (!this.enabled) return false;
+  return store.set(key, value);
+};
+
+
+/**
+ * Get a value from local storage by `key`.
+ *
+ * @param {string} key
+ * @return {Object}
+ */
+
+Store.prototype.get = function(key) {
+  if (!this.enabled) return null;
+  return store.get(key);
+};
+
+
+/**
+ * Remove a value from local storage by `key`.
+ *
+ * @param {string} key
+ */
+
+Store.prototype.remove = function(key) {
+  if (!this.enabled) return false;
+  return store.remove(key);
+};
+
+
+/**
+ * Expose the store singleton.
+ */
+
+module.exports = bind.all(new Store());
+
+
+/**
+ * Expose the `Store` constructor.
+ */
+
+module.exports.Store = Store;
+
+}, {"bind":9,"defaults":14,"store.js":67}],
+67: [function(require, module, exports) {
 var json             = require('json')
   , store            = {}
   , win              = window
@@ -1739,59 +5439,1248 @@ try {
 store.enabled = !store.disabled
 
 module.exports = store;
-});
-require.register("segmentio-top-domain/index.js", function(exports, require, module){
+}, {"json":57}],
+65: [function(require, module, exports) {
 
-var url = require('url');
-
-// Official Grammar: http://tools.ietf.org/html/rfc883#page-56
-// Look for tlds with up to 2-6 characters.
-
-module.exports = function (urlStr) {
-
-  var host     = url.parse(urlStr).hostname
-    , topLevel = host.match(/[a-z0-9][a-z0-9\-]*[a-z0-9]\.[a-z\.]{2,6}$/i);
-
-  return topLevel ? topLevel[0] : host;
+module.exports = function(a, b){
+  var fn = function(){};
+  fn.prototype = b.prototype;
+  a.prototype = new fn;
+  a.prototype.constructor = a;
 };
-});
-require.register("timoxley-next-tick/index.js", function(exports, require, module){
-"use strict"
+}, {}],
+16: [function(require, module, exports) {
 
-if (typeof setImmediate == 'function') {
-  module.exports = function(f){ setImmediate(f) }
-}
-// legacy node.js
-else if (typeof process != 'undefined' && typeof process.nextTick == 'function') {
-  module.exports = process.nextTick
-}
-// fallback for other environments / postMessage behaves badly on IE8
-else if (typeof window == 'undefined' || window.ActiveXObject || !window.postMessage) {
-  module.exports = function(f){ setTimeout(f) };
-} else {
-  var q = [];
+var isEmpty = require('is-empty');
 
-  window.addEventListener('message', function(){
-    var i = 0;
-    while (i < q.length) {
-      try { q[i++](); }
-      catch (e) {
-        q = q.slice(i);
-        window.postMessage('tic!', '*');
-        throw e;
-      }
+try {
+  var typeOf = require('type');
+} catch (e) {
+  var typeOf = require('component-type');
+}
+
+
+/**
+ * Types.
+ */
+
+var types = [
+  'arguments',
+  'array',
+  'boolean',
+  'date',
+  'element',
+  'function',
+  'null',
+  'number',
+  'object',
+  'regexp',
+  'string',
+  'undefined'
+];
+
+
+/**
+ * Expose type checkers.
+ *
+ * @param {Mixed} value
+ * @return {Boolean}
+ */
+
+for (var i = 0, type; type = types[i]; i++) exports[type] = generate(type);
+
+
+/**
+ * Add alias for `function` for old browsers.
+ */
+
+exports.fn = exports['function'];
+
+
+/**
+ * Expose `empty` check.
+ */
+
+exports.empty = isEmpty;
+
+
+/**
+ * Expose `nan` check.
+ */
+
+exports.nan = function (val) {
+  return exports.number(val) && val != val;
+};
+
+
+/**
+ * Generate a type checker.
+ *
+ * @param {String} type
+ * @return {Function}
+ */
+
+function generate (type) {
+  return function (value) {
+    return type === typeOf(value);
+  };
+}
+}, {"is-empty":44,"type":45,"component-type":45}],
+17: [function(require, module, exports) {
+module.exports = function isMeta (e) {
+    if (e.metaKey || e.altKey || e.ctrlKey || e.shiftKey) return true;
+
+    // Logic that handles checks for the middle mouse button, based
+    // on [jQuery](https://github.com/jquery/jquery/blob/master/src/event.js#L466).
+    var which = e.which, button = e.button;
+    if (!which && button !== undefined) {
+      return (!button & 1) && (!button & 2) && (button & 4);
+    } else if (which === 2) {
+      return true;
     }
-    q.length = 0;
-  }, true);
 
-  module.exports = function(fn){
-    if (!q.length) window.postMessage('tic!', '*');
-    q.push(fn);
+    return false;
+};
+}, {}],
+18: [function(require, module, exports) {
+
+/**
+ * HOP ref.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Return own keys in `obj`.
+ *
+ * @param {Object} obj
+ * @return {Array}
+ * @api public
+ */
+
+exports.keys = Object.keys || function(obj){
+  var keys = [];
+  for (var key in obj) {
+    if (has.call(obj, key)) {
+      keys.push(key);
+    }
+  }
+  return keys;
+};
+
+/**
+ * Return own values in `obj`.
+ *
+ * @param {Object} obj
+ * @return {Array}
+ * @api public
+ */
+
+exports.values = function(obj){
+  var vals = [];
+  for (var key in obj) {
+    if (has.call(obj, key)) {
+      vals.push(obj[key]);
+    }
+  }
+  return vals;
+};
+
+/**
+ * Merge `b` into `a`.
+ *
+ * @param {Object} a
+ * @param {Object} b
+ * @return {Object} a
+ * @api public
+ */
+
+exports.merge = function(a, b){
+  for (var key in b) {
+    if (has.call(b, key)) {
+      a[key] = b[key];
+    }
+  }
+  return a;
+};
+
+/**
+ * Return length of `obj`.
+ *
+ * @param {Object} obj
+ * @return {Number}
+ * @api public
+ */
+
+exports.length = function(obj){
+  return exports.keys(obj).length;
+};
+
+/**
+ * Check if `obj` is empty.
+ *
+ * @param {Object} obj
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isEmpty = function(obj){
+  return 0 == exports.length(obj);
+};
+}, {}],
+20: [function(require, module, exports) {
+
+/**
+ * Module Dependencies.
+ */
+
+var debug = require('debug')('analytics.js:normalize');
+var defaults = require('defaults');
+var each = require('each');
+var includes = require('includes');
+var is = require('is');
+var map = require('component/map');
+
+/**
+ * HOP.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Expose `normalize`
+ */
+
+module.exports = normalize;
+
+/**
+ * Toplevel properties.
+ */
+
+var toplevel = [
+  'integrations',
+  'anonymousId',
+  'timestamp',
+  'context'
+];
+
+/**
+ * Normalize `msg` based on integrations `list`.
+ *
+ * @param {Object} msg
+ * @param {Array} list
+ * @return {Function}
+ */
+
+function normalize(msg, list){
+  var lower = map(list, function(s){ return s.toLowerCase(); });
+  var opts = msg.options || {};
+  var integrations = opts.integrations || {};
+  var providers = opts.providers || {};
+  var context = opts.context || {};
+  var ret = {};
+  debug('<-', msg);
+
+  // integrations.
+  each(opts, function(key, value){
+    if (!integration(key)) return;
+    if (!has.call(integrations, key)) integrations[key] = value;
+    delete opts[key];
+  });
+
+  // providers.
+  delete opts.providers;
+  each(providers, function(key, value){
+    if (!integration(key)) return;
+    if (is.object(integrations[key])) return;
+    if (has.call(integrations, key) && typeof providers[key] === 'boolean') return;
+    integrations[key] = value;
+  });
+
+  // move all toplevel options to msg
+  // and the rest to context.
+  each(opts, function(key){
+    if (includes(key, toplevel)) {
+      ret[key] = opts[key];
+    } else {
+      context[key] = opts[key];
+    }
+  });
+
+  // cleanup
+  delete msg.options;
+  ret.integrations = integrations;
+  ret.context = context;
+  ret = defaults(ret, msg);
+  debug('->', ret);
+  return ret;
+
+  function integration(name){
+    return !!(includes(name, list) || name.toLowerCase() === 'all' || includes(name.toLowerCase(), lower));
   }
 }
 
-});
-require.register("yields-prevent/index.js", function(exports, require, module){
+}, {"debug":13,"defaults":14,"each":4,"includes":68,"is":16,"component/map":69}],
+68: [function(require, module, exports) {
+'use strict';
+
+/**
+ * Module dependencies.
+ */
+
+// XXX: Hacky fix for duo not supporting scoped npm packages
+var each; try { each = require('@ndhoule/each'); } catch(e) { each = require('each'); }
+
+/**
+ * String#indexOf reference.
+ */
+
+var strIndexOf = String.prototype.indexOf;
+
+/**
+ * Object.is/sameValueZero polyfill.
+ *
+ * @api private
+ * @param {*} value1
+ * @param {*} value2
+ * @return {boolean}
+ */
+
+// TODO: Move to library
+var sameValueZero = function sameValueZero(value1, value2) {
+  // Normal values and check for 0 / -0
+  if (value1 === value2) {
+    return value1 !== 0 || 1 / value1 === 1 / value2;
+  }
+  // NaN
+  return value1 !== value1 && value2 !== value2;
+};
+
+/**
+ * Searches a given `collection` for a value, returning true if the collection
+ * contains the value and false otherwise. Can search strings, arrays, and
+ * objects.
+ *
+ * @name includes
+ * @api public
+ * @param {*} searchElement The element to search for.
+ * @param {Object|Array|string} collection The collection to search.
+ * @return {boolean}
+ * @example
+ * includes(2, [1, 2, 3]);
+ * //=> true
+ *
+ * includes(4, [1, 2, 3]);
+ * //=> false
+ *
+ * includes(2, { a: 1, b: 2, c: 3 });
+ * //=> true
+ *
+ * includes('a', { a: 1, b: 2, c: 3 });
+ * //=> false
+ *
+ * includes('abc', 'xyzabc opq');
+ * //=> true
+ *
+ * includes('nope', 'xyzabc opq');
+ * //=> false
+ */
+var includes = function includes(searchElement, collection) {
+  var found = false;
+
+  // Delegate to String.prototype.indexOf when `collection` is a string
+  if (typeof collection === 'string') {
+    return strIndexOf.call(collection, searchElement) !== -1;
+  }
+
+  // Iterate through enumerable/own array elements and object properties.
+  each(function(value) {
+    if (sameValueZero(value, searchElement)) {
+      found = true;
+      // Exit iteration early when found
+      return false;
+    }
+  }, collection);
+
+  return found;
+};
+
+/**
+ * Exports.
+ */
+
+module.exports = includes;
+
+}, {"each":70}],
+70: [function(require, module, exports) {
+'use strict';
+
+/**
+ * Module dependencies.
+ */
+
+// XXX: Hacky fix for Duo not supporting scoped modules
+var keys; try { keys = require('@ndhoule/keys'); } catch(e) { keys = require('keys'); }
+
+/**
+ * Object.prototype.toString reference.
+ */
+
+var objToString = Object.prototype.toString;
+
+/**
+ * Tests if a value is a number.
+ *
+ * @name isNumber
+ * @api private
+ * @param {*} val The value to test.
+ * @return {boolean} Returns `true` if `val` is a number, otherwise `false`.
+ */
+
+// TODO: Move to library
+var isNumber = function isNumber(val) {
+  var type = typeof val;
+  return type === 'number' || (type === 'object' && objToString.call(val) === '[object Number]');
+};
+
+/**
+ * Tests if a value is an array.
+ *
+ * @name isArray
+ * @api private
+ * @param {*} val The value to test.
+ * @return {boolean} Returns `true` if the value is an array, otherwise `false`.
+ */
+
+// TODO: Move to library
+var isArray = typeof Array.isArray === 'function' ? Array.isArray : function isArray(val) {
+  return objToString.call(val) === '[object Array]';
+};
+
+/**
+ * Tests if a value is array-like. Array-like means the value is not a function and has a numeric
+ * `.length` property.
+ *
+ * @name isArrayLike
+ * @api private
+ * @param {*} val
+ * @return {boolean}
+ */
+
+// TODO: Move to library
+var isArrayLike = function isArrayLike(val) {
+  return val != null && (isArray(val) || (val !== 'function' && isNumber(val.length)));
+};
+
+/**
+ * Internal implementation of `each`. Works on arrays and array-like data structures.
+ *
+ * @name arrayEach
+ * @api private
+ * @param {Function(value, key, collection)} iterator The function to invoke per iteration.
+ * @param {Array} array The array(-like) structure to iterate over.
+ * @return {undefined}
+ */
+
+var arrayEach = function arrayEach(iterator, array) {
+  for (var i = 0; i < array.length; i += 1) {
+    // Break iteration early if `iterator` returns `false`
+    if (iterator(array[i], i, array) === false) {
+      break;
+    }
+  }
+};
+
+/**
+ * Internal implementation of `each`. Works on objects.
+ *
+ * @name baseEach
+ * @api private
+ * @param {Function(value, key, collection)} iterator The function to invoke per iteration.
+ * @param {Object} object The object to iterate over.
+ * @return {undefined}
+ */
+
+var baseEach = function baseEach(iterator, object) {
+  var ks = keys(object);
+
+  for (var i = 0; i < ks.length; i += 1) {
+    // Break iteration early if `iterator` returns `false`
+    if (iterator(object[ks[i]], ks[i], object) === false) {
+      break;
+    }
+  }
+};
+
+/**
+ * Iterate over an input collection, invoking an `iterator` function for each element in the
+ * collection and passing to it three arguments: `(value, index, collection)`. The `iterator`
+ * function can end iteration early by returning `false`.
+ *
+ * @name each
+ * @api public
+ * @param {Function(value, key, collection)} iterator The function to invoke per iteration.
+ * @param {Array|Object|string} collection The collection to iterate over.
+ * @return {undefined} Because `each` is run only for side effects, always returns `undefined`.
+ * @example
+ * var log = console.log.bind(console);
+ *
+ * each(log, ['a', 'b', 'c']);
+ * //-> 'a', 0, ['a', 'b', 'c']
+ * //-> 'b', 1, ['a', 'b', 'c']
+ * //-> 'c', 2, ['a', 'b', 'c']
+ * //=> undefined
+ *
+ * each(log, 'tim');
+ * //-> 't', 2, 'tim'
+ * //-> 'i', 1, 'tim'
+ * //-> 'm', 0, 'tim'
+ * //=> undefined
+ *
+ * // Note: Iteration order not guaranteed across environments
+ * each(log, { name: 'tim', occupation: 'enchanter' });
+ * //-> 'tim', 'name', { name: 'tim', occupation: 'enchanter' }
+ * //-> 'enchanter', 'occupation', { name: 'tim', occupation: 'enchanter' }
+ * //=> undefined
+ */
+
+var each = function each(iterator, collection) {
+  return (isArrayLike(collection) ? arrayEach : baseEach).call(this, iterator, collection);
+};
+
+/**
+ * Exports.
+ */
+
+module.exports = each;
+
+}, {"keys":71}],
+71: [function(require, module, exports) {
+'use strict';
+
+/**
+ * charAt reference.
+ */
+
+var strCharAt = String.prototype.charAt;
+
+/**
+ * Returns the character at a given index.
+ *
+ * @param {string} str
+ * @param {number} index
+ * @return {string|undefined}
+ */
+
+// TODO: Move to a library
+var charAt = function(str, index) {
+  return strCharAt.call(str, index);
+};
+
+/**
+ * hasOwnProperty reference.
+ */
+
+var hop = Object.prototype.hasOwnProperty;
+
+/**
+ * Object.prototype.toString reference.
+ */
+
+var toStr = Object.prototype.toString;
+
+/**
+ * hasOwnProperty, wrapped as a function.
+ *
+ * @name has
+ * @api private
+ * @param {*} context
+ * @param {string|number} prop
+ * @return {boolean}
+ */
+
+// TODO: Move to a library
+var has = function has(context, prop) {
+  return hop.call(context, prop);
+};
+
+/**
+ * Returns true if a value is a string, otherwise false.
+ *
+ * @name isString
+ * @api private
+ * @param {*} val
+ * @return {boolean}
+ */
+
+// TODO: Move to a library
+var isString = function isString(val) {
+  return toStr.call(val) === '[object String]';
+};
+
+/**
+ * Returns true if a value is array-like, otherwise false. Array-like means a
+ * value is not null, undefined, or a function, and has a numeric `length`
+ * property.
+ *
+ * @name isArrayLike
+ * @api private
+ * @param {*} val
+ * @return {boolean}
+ */
+
+// TODO: Move to a library
+var isArrayLike = function isArrayLike(val) {
+  return val != null && (typeof val !== 'function' && typeof val.length === 'number');
+};
+
+
+/**
+ * indexKeys
+ *
+ * @name indexKeys
+ * @api private
+ * @param {} target
+ * @param {} pred
+ * @return {Array}
+ */
+
+var indexKeys = function indexKeys(target, pred) {
+  pred = pred || has;
+  var results = [];
+
+  for (var i = 0, len = target.length; i < len; i += 1) {
+    if (pred(target, i)) {
+      results.push(String(i));
+    }
+  }
+
+  return results;
+};
+
+/**
+ * Returns an array of all the owned
+ *
+ * @name objectKeys
+ * @api private
+ * @param {*} target
+ * @param {Function} pred Predicate function used to include/exclude values from
+ * the resulting array.
+ * @return {Array}
+ */
+
+var objectKeys = function objectKeys(target, pred) {
+  pred = pred || has;
+  var results = [];
+
+
+  for (var key in target) {
+    if (pred(target, key)) {
+      results.push(String(key));
+    }
+  }
+
+  return results;
+};
+
+/**
+ * Creates an array composed of all keys on the input object. Ignores any non-enumerable properties.
+ * More permissive than the native `Object.keys` function (non-objects will not throw errors).
+ *
+ * @name keys
+ * @api public
+ * @category Object
+ * @param {Object} source The value to retrieve keys from.
+ * @return {Array} An array containing all the input `source`'s keys.
+ * @example
+ * keys({ likes: 'avocado', hates: 'pineapple' });
+ * //=> ['likes', 'pineapple'];
+ *
+ * // Ignores non-enumerable properties
+ * var hasHiddenKey = { name: 'Tim' };
+ * Object.defineProperty(hasHiddenKey, 'hidden', {
+ *   value: 'i am not enumerable!',
+ *   enumerable: false
+ * })
+ * keys(hasHiddenKey);
+ * //=> ['name'];
+ *
+ * // Works on arrays
+ * keys(['a', 'b', 'c']);
+ * //=> ['0', '1', '2']
+ *
+ * // Skips unpopulated indices in sparse arrays
+ * var arr = [1];
+ * arr[4] = 4;
+ * keys(arr);
+ * //=> ['0', '4']
+ */
+
+module.exports = function keys(source) {
+  if (source == null) {
+    return [];
+  }
+
+  // IE6-8 compatibility (string)
+  if (isString(source)) {
+    return indexKeys(source, charAt);
+  }
+
+  // IE6-8 compatibility (arguments)
+  if (isArrayLike(source)) {
+    return indexKeys(source, has);
+  }
+
+  return objectKeys(source);
+};
+
+}, {}],
+69: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var toFunction = require('to-function');
+
+/**
+ * Map the given `arr` with callback `fn(val, i)`.
+ *
+ * @param {Array} arr
+ * @param {Function} fn
+ * @return {Array}
+ * @api public
+ */
+
+module.exports = function(arr, fn){
+  var ret = [];
+  fn = toFunction(fn);
+  for (var i = 0; i < arr.length; ++i) {
+    ret.push(fn(arr[i], i));
+  }
+  return ret;
+};
+}, {"to-function":72}],
+72: [function(require, module, exports) {
+
+/**
+ * Module Dependencies
+ */
+
+var expr;
+try {
+  expr = require('props');
+} catch(e) {
+  expr = require('component-props');
+}
+
+/**
+ * Expose `toFunction()`.
+ */
+
+module.exports = toFunction;
+
+/**
+ * Convert `obj` to a `Function`.
+ *
+ * @param {Mixed} obj
+ * @return {Function}
+ * @api private
+ */
+
+function toFunction(obj) {
+  switch ({}.toString.call(obj)) {
+    case '[object Object]':
+      return objectToFunction(obj);
+    case '[object Function]':
+      return obj;
+    case '[object String]':
+      return stringToFunction(obj);
+    case '[object RegExp]':
+      return regexpToFunction(obj);
+    default:
+      return defaultToFunction(obj);
+  }
+}
+
+/**
+ * Default to strict equality.
+ *
+ * @param {Mixed} val
+ * @return {Function}
+ * @api private
+ */
+
+function defaultToFunction(val) {
+  return function(obj){
+    return val === obj;
+  };
+}
+
+/**
+ * Convert `re` to a function.
+ *
+ * @param {RegExp} re
+ * @return {Function}
+ * @api private
+ */
+
+function regexpToFunction(re) {
+  return function(obj){
+    return re.test(obj);
+  };
+}
+
+/**
+ * Convert property `str` to a function.
+ *
+ * @param {String} str
+ * @return {Function}
+ * @api private
+ */
+
+function stringToFunction(str) {
+  // immediate such as "> 20"
+  if (/^ *\W+/.test(str)) return new Function('_', 'return _ ' + str);
+
+  // properties such as "name.first" or "age > 18" or "age > 18 && age < 36"
+  return new Function('_', 'return ' + get(str));
+}
+
+/**
+ * Convert `object` to a function.
+ *
+ * @param {Object} object
+ * @return {Function}
+ * @api private
+ */
+
+function objectToFunction(obj) {
+  var match = {};
+  for (var key in obj) {
+    match[key] = typeof obj[key] === 'string'
+      ? defaultToFunction(obj[key])
+      : toFunction(obj[key]);
+  }
+  return function(val){
+    if (typeof val !== 'object') return false;
+    for (var key in match) {
+      if (!(key in val)) return false;
+      if (!match[key](val[key])) return false;
+    }
+    return true;
+  };
+}
+
+/**
+ * Built the getter function. Supports getter style functions
+ *
+ * @param {String} str
+ * @return {String}
+ * @api private
+ */
+
+function get(str) {
+  var props = expr(str);
+  if (!props.length) return '_.' + str;
+
+  var val, i, prop;
+  for (i = 0; i < props.length; i++) {
+    prop = props[i];
+    val = '_.' + prop;
+    val = "('function' == typeof " + val + " ? " + val + "() : " + val + ")";
+
+    // mimic negative lookbehind to avoid problems with nested properties
+    str = stripNested(prop, str, val);
+  }
+
+  return str;
+}
+
+/**
+ * Mimic negative lookbehind to avoid problems with nested properties.
+ *
+ * See: http://blog.stevenlevithan.com/archives/mimic-lookbehind-javascript
+ *
+ * @param {String} prop
+ * @param {String} str
+ * @param {String} val
+ * @return {String}
+ * @api private
+ */
+
+function stripNested (prop, str, val) {
+  return str.replace(new RegExp('(\\.)?' + prop, 'g'), function($0, $1) {
+    return $1 ? $0 : val;
+  });
+}
+
+}, {"props":73,"component-props":73}],
+73: [function(require, module, exports) {
+/**
+ * Global Names
+ */
+
+var globals = /\b(this|Array|Date|Object|Math|JSON)\b/g;
+
+/**
+ * Return immediate identifiers parsed from `str`.
+ *
+ * @param {String} str
+ * @param {String|Function} map function or prefix
+ * @return {Array}
+ * @api public
+ */
+
+module.exports = function(str, fn){
+  var p = unique(props(str));
+  if (fn && 'string' == typeof fn) fn = prefixed(fn);
+  if (fn) return map(str, p, fn);
+  return p;
+};
+
+/**
+ * Return immediate identifiers in `str`.
+ *
+ * @param {String} str
+ * @return {Array}
+ * @api private
+ */
+
+function props(str) {
+  return str
+    .replace(/\.\w+|\w+ *\(|"[^"]*"|'[^']*'|\/([^/]+)\//g, '')
+    .replace(globals, '')
+    .match(/[$a-zA-Z_]\w*/g)
+    || [];
+}
+
+/**
+ * Return `str` with `props` mapped with `fn`.
+ *
+ * @param {String} str
+ * @param {Array} props
+ * @param {Function} fn
+ * @return {String}
+ * @api private
+ */
+
+function map(str, props, fn) {
+  var re = /\.\w+|\w+ *\(|"[^"]*"|'[^']*'|\/([^/]+)\/|[a-zA-Z_]\w*/g;
+  return str.replace(re, function(_){
+    if ('(' == _[_.length - 1]) return fn(_);
+    if (!~props.indexOf(_)) return _;
+    return fn(_);
+  });
+}
+
+/**
+ * Return unique array.
+ *
+ * @param {Array} arr
+ * @return {Array}
+ * @api private
+ */
+
+function unique(arr) {
+  var ret = [];
+
+  for (var i = 0; i < arr.length; i++) {
+    if (~ret.indexOf(arr[i])) continue;
+    ret.push(arr[i]);
+  }
+
+  return ret;
+}
+
+/**
+ * Map with prefix `str`.
+ */
+
+function prefixed(str) {
+  return function(_){
+    return str + _;
+  };
+}
+
+}, {}],
+21: [function(require, module, exports) {
+
+/**
+ * Bind `el` event `type` to `fn`.
+ *
+ * @param {Element} el
+ * @param {String} type
+ * @param {Function} fn
+ * @param {Boolean} capture
+ * @return {Function}
+ * @api public
+ */
+
+exports.bind = function(el, type, fn, capture){
+  if (el.addEventListener) {
+    el.addEventListener(type, fn, capture || false);
+  } else {
+    el.attachEvent('on' + type, fn);
+  }
+  return fn;
+};
+
+/**
+ * Unbind `el` event `type`'s callback `fn`.
+ *
+ * @param {Element} el
+ * @param {String} type
+ * @param {Function} fn
+ * @param {Boolean} capture
+ * @return {Function}
+ * @api public
+ */
+
+exports.unbind = function(el, type, fn, capture){
+  if (el.removeEventListener) {
+    el.removeEventListener(type, fn, capture || false);
+  } else {
+    el.detachEvent('on' + type, fn);
+  }
+  return fn;
+};
+
+}, {}],
+22: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var canonical = require('canonical');
+var includes = require('includes');
+var url = require('url');
+
+/**
+ * Return a default `options.context.page` object.
+ *
+ * https://segment.com/docs/spec/page/#properties
+ *
+ * @return {Object}
+ */
+
+function pageDefaults() {
+  return {
+    path: canonicalPath(),
+    referrer: document.referrer,
+    search: location.search,
+    title: document.title,
+    url: canonicalUrl(location.search)
+  };
+}
+
+/**
+ * Return the canonical path for the page.
+ *
+ * @return {string}
+ */
+
+function canonicalPath() {
+  var canon = canonical();
+  if (!canon) return window.location.pathname;
+  var parsed = url.parse(canon);
+  return parsed.pathname;
+}
+
+/**
+ * Return the canonical URL for the page concat the given `search`
+ * and strip the hash.
+ *
+ * @param {string} search
+ * @return {string}
+ */
+
+function canonicalUrl(search) {
+  var canon = canonical();
+  if (canon) return includes('?', canon) ? canon : canon + search;
+  var url = window.location.href;
+  var i = url.indexOf('#');
+  return i === -1 ? url : url.slice(0, i);
+}
+
+/**
+ * Exports.
+ */
+
+module.exports = pageDefaults;
+
+}, {"canonical":74,"includes":68,"url":75}],
+74: [function(require, module, exports) {
+module.exports = function canonical () {
+  var tags = document.getElementsByTagName('link');
+  for (var i = 0, tag; tag = tags[i]; i++) {
+    if ('canonical' == tag.getAttribute('rel')) return tag.getAttribute('href');
+  }
+};
+}, {}],
+75: [function(require, module, exports) {
+
+/**
+ * Parse the given `url`.
+ *
+ * @param {String} str
+ * @return {Object}
+ * @api public
+ */
+
+exports.parse = function(url){
+  var a = document.createElement('a');
+  a.href = url;
+  return {
+    href: a.href,
+    host: a.host || location.host,
+    port: ('0' === a.port || '' === a.port) ? port(a.protocol) : a.port,
+    hash: a.hash,
+    hostname: a.hostname || location.hostname,
+    pathname: a.pathname.charAt(0) != '/' ? '/' + a.pathname : a.pathname,
+    protocol: !a.protocol || ':' == a.protocol ? location.protocol : a.protocol,
+    search: a.search,
+    query: a.search.slice(1)
+  };
+};
+
+/**
+ * Check if `url` is absolute.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isAbsolute = function(url){
+  return 0 == url.indexOf('//') || !!~url.indexOf('://');
+};
+
+/**
+ * Check if `url` is relative.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isRelative = function(url){
+  return !exports.isAbsolute(url);
+};
+
+/**
+ * Check if `url` is cross domain.
+ *
+ * @param {String} url
+ * @return {Boolean}
+ * @api public
+ */
+
+exports.isCrossDomain = function(url){
+  url = exports.parse(url);
+  var location = exports.parse(window.location.href);
+  return url.hostname !== location.hostname
+    || url.port !== location.port
+    || url.protocol !== location.protocol;
+};
+
+/**
+ * Return default port for `protocol`.
+ *
+ * @param  {String} protocol
+ * @return {String}
+ * @api private
+ */
+function port (protocol){
+  switch (protocol) {
+    case 'http:':
+      return 80;
+    case 'https:':
+      return 443;
+    default:
+      return location.port;
+  }
+}
+
+}, {}],
+23: [function(require, module, exports) {
+'use strict';
+
+var objToString = Object.prototype.toString;
+
+// TODO: Move to lib
+var existy = function(val) {
+  return val != null;
+};
+
+// TODO: Move to lib
+var isArray = function(val) {
+  return objToString.call(val) === '[object Array]';
+};
+
+// TODO: Move to lib
+var isString = function(val) {
+   return typeof val === 'string' || objToString.call(val) === '[object String]';
+};
+
+// TODO: Move to lib
+var isObject = function(val) {
+  return val != null && typeof val === 'object';
+};
+
+/**
+ * Returns a copy of the new `object` containing only the specified properties.
+ *
+ * @name pick
+ * @api public
+ * @category Object
+ * @see {@link omit}
+ * @param {Array.<string>|string} props The property or properties to keep.
+ * @param {Object} object The object to iterate over.
+ * @return {Object} A new object containing only the specified properties from `object`.
+ * @example
+ * var person = { name: 'Tim', occupation: 'enchanter', fears: 'rabbits' };
+ *
+ * pick('name', person);
+ * //=> { name: 'Tim' }
+ *
+ * pick(['name', 'fears'], person);
+ * //=> { name: 'Tim', fears: 'rabbits' }
+ */
+
+var pick = function pick(props, object) {
+  if (!existy(object) || !isObject(object)) {
+    return {};
+  }
+
+  if (isString(props)) {
+    props = [props];
+  }
+
+  if (!isArray(props)) {
+    props = [];
+  }
+
+  var result = {};
+
+  for (var i = 0; i < props.length; i += 1) {
+    if (isString(props[i]) && props[i] in object) {
+      result[props[i]] = object[props[i]];
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Exports.
+ */
+
+module.exports = pick;
+
+}, {}],
+24: [function(require, module, exports) {
 
 /**
  * prevent default on the given `e`.
@@ -1813,3766 +6702,4759 @@ module.exports = function(e){
     : e.returnValue = false;
 };
 
-});
-require.register("analytics/src/index.js", function(exports, require, module){
-// Analytics.js
-//
-// (c) 2013 Segment.io Inc.
-// Analytics.js may be freely distributed under the MIT license.
-
-var Analytics = require('./analytics')
-  , providers = require('./providers');
-
-
-module.exports = new Analytics(providers);
-});
-require.register("analytics/src/analytics.js", function(exports, require, module){
-var after          = require('after')
-  , bind           = require('event').bind
-  , clone          = require('clone')
-  , cookie         = require('./cookie')
-  , each           = require('each')
-  , extend         = require('extend')
-  , isEmail        = require('is-email')
-  , isMeta         = require('is-meta')
-  , localStore     = require('./localStore')
-  , newDate        = require('new-date')
-  , size           = require('object').length
-  , preventDefault = require('prevent')
-  , Provider       = require('./provider')
-  , providers      = require('./providers')
-  , querystring    = require('querystring')
-  , type           = require('type')
-  , url            = require('url')
-  , user           = require('./user')
-  , utils          = require('./utils');
-
-
-module.exports = Analytics;
-
+}, {}],
+25: [function(require, module, exports) {
 
 /**
- * Analytics.
+ * Module dependencies.
+ */
+
+var encode = encodeURIComponent;
+var decode = decodeURIComponent;
+var trim = require('trim');
+var type = require('type');
+
+/**
+ * Parse the given query `str`.
  *
- * @param {Object} Providers - Provider classes that the user can initialize.
- */
-
-function Analytics (Providers) {
-  var self = this;
-
-  this.VERSION = '0.11.10';
-
-  each(Providers, function (Provider) {
-    self.addProvider(Provider);
-  });
-
-  // Wrap `onload` with our own that will cache the loaded state of the page.
-  var oldonload = window.onload;
-  window.onload = function () {
-    self.loaded = true;
-    if ('function' === type(oldonload)) oldonload();
-  };
-}
-
-
-/**
- * Extend the Analytics prototype.
- */
-
-extend(Analytics.prototype, {
-
-  // Whether `onload` has fired.
-  loaded : false,
-
-  // Whether `analytics` has been initialized.
-  initialized : false,
-
-  // Whether all of our analytics providers are ready to accept calls. Give it a
-  // real jank name since we already use `analytics.ready` for the method.
-  readied : false,
-
-  // A queue for ready callbacks to run when our `readied` state becomes `true`.
-  callbacks : [],
-
-  // Milliseconds to wait for requests to clear before leaving the current page.
-  timeout : 300,
-
-  // A reference to the current user object.
-  user : user,
-
-  // The default Provider.
-  Provider : Provider,
-
-  // Providers that can be initialized. Add using `this.addProvider`.
-  _providers : {},
-
-  // The currently initialized providers.
-  providers : [],
-
-
-  /**
-   * Add a provider to `_providers` to be initialized later.
-   *
-   * @param {String} name - The name of the provider.
-   * @param {Function} Provider - The provider's class.
-   */
-
-  addProvider : function (Provider) {
-    this._providers[Provider.prototype.name] = Provider;
-  },
-
-
-  /**
-   * Initialize
-   *
-   * Call `initialize` to setup analytics.js before identifying or
-   * tracking any users or events. For example:
-   *
-   *     analytics.initialize({
-   *         'Google Analytics' : 'UA-XXXXXXX-X',
-   *         'Segment.io'       : 'XXXXXXXXXXX',
-   *         'KISSmetrics'      : 'XXXXXXXXXXX'
-   *     });
-   *
-   * @param {Object} providers - a dictionary of the providers you want to
-   * enable. The keys are the names of the providers and their values are either
-   * an api key, or  dictionary of extra settings (including the api key).
-   *
-   * @param {Object} options (optional) - extra settings to initialize with.
-   */
-
-  initialize : function (providers, options) {
-    options || (options = {});
-
-    var self = this;
-
-    // Reset our state.
-    this.providers = [];
-    this.initialized = false;
-    this.readied = false;
-
-    // Set the storage options
-    cookie.options(options.cookie);
-    localStore.options(options.localStorage);
-
-    // Set the options for loading and saving the user
-    user.options(options.user);
-    user.load();
-
-    // Create a ready method that will call all of our ready callbacks after all
-    // of our providers have been initialized and loaded. We'll pass the
-    // function into each provider's initialize method, so they can callback
-    // after they've loaded successfully.
-    var ready = after(size(providers), function () {
-      self.readied = true;
-      var callback;
-      while(callback = self.callbacks.shift()) {
-        callback();
-      }
-    });
-
-    // Initialize a new instance of each provider with their `options`, and
-    // copy the provider into `this.providers`.
-    each(providers, function (key, options) {
-      var Provider = self._providers[key];
-      if (!Provider) return;
-      self.providers.push(new Provider(options, ready, self));
-    });
-
-    // Identify and track any `ajs_uid` and `ajs_event` parameters in the URL.
-    var query = url.parse(window.location.href).query;
-    var queries = querystring.parse(query);
-    if (queries.ajs_uid) this.identify(queries.ajs_uid);
-    if (queries.ajs_event) this.track(queries.ajs_event);
-
-    // Update the initialized state that other methods rely on.
-    this.initialized = true;
-  },
-
-
-  /**
-   * Ready
-   *
-   * Add a callback that will get called when all of the analytics services you
-   * initialize are ready to be called. It's like jQuery's `ready` except for
-   * analytics instead of the DOM.
-   *
-   * If we're already ready, it will callback immediately.
-   *
-   * @param {Function} callback - The callback to attach.
-   */
-
-  ready : function (callback) {
-    if (type(callback) !== 'function') return;
-    if (this.readied) return callback();
-    this.callbacks.push(callback);
-  },
-
-
-  /**
-   * Identify
-   *
-   * Identifying a user ties all of their actions to an ID you recognize
-   * and records properties about a user. For example:
-   *
-   *     analytics.identify('4d3ed089fb60ab534684b7e0', {
-   *         name  : 'Achilles',
-   *         email : 'achilles@segment.io',
-   *         age   : 23
-   *     });
-   *
-   * @param {String} userId (optional) - The ID you recognize the user by.
-   * Ideally this isn't an email, because that might change in the future.
-   *
-   * @param {Object} traits (optional) - A dictionary of traits you know about
-   * the user. Things like `name`, `age`, etc.
-   *
-   * @param {Object} options (optional) - Settings for the identify call.
-   *
-   * @param {Function} callback (optional) - A function to call after a small
-   * timeout, giving the identify call time to make requests.
-   */
-
-  identify : function (userId, traits, options, callback) {
-    if (!this.initialized) return;
-
-    // Allow for optional arguments.
-    if (type(options) === 'function') {
-      callback = options;
-      options = undefined;
-    }
-    if (type(traits) === 'function') {
-      callback = traits;
-      traits = undefined;
-    }
-    if (type(userId) === 'object') {
-      if (traits && type(traits) === 'function') callback = traits;
-      traits = userId;
-      userId = undefined;
-    }
-
-    // Use our cookied ID if they didn't provide one.
-    if (userId === undefined || user === null) userId = user.id();
-
-    // Update the cookie with the new userId and traits.
-    var alias = user.update(userId, traits);
-
-    // Clone `traits` before we manipulate it, so we don't do anything uncouth
-    // and take the user.traits() so anonymous users carry over traits.
-    traits = cleanTraits(userId, clone(user.traits()));
-
-    // Call `identify` on all of our enabled providers that support it.
-    each(this.providers, function (provider) {
-      if (provider.identify && isEnabled(provider, options)) {
-        var args = [userId, clone(traits), clone(options)];
-        if (provider.ready) {
-          provider.identify.apply(provider, args);
-        } else {
-          provider.enqueue('identify', args);
-        }
-      }
-    });
-
-    // If we should alias, go ahead and do it.
-    // if (alias) this.alias(userId);
-
-    if (callback && type(callback) === 'function') {
-      setTimeout(callback, this.timeout);
-    }
-  },
-
-
-
-  /**
-   * Group
-   *
-   * Groups multiple users together under one "account" or "team" or "company".
-   * Acts on the currently identified user, so you need to call identify before
-   * calling group. For example:
-   *
-   *     analytics.identify('4d3ed089fb60ab534684b7e0', {
-   *         name  : 'Achilles',
-   *         email : 'achilles@segment.io',
-   *         age   : 23
-   *     });
-   *
-   *     analytics.group('5we93je3889fb60a937dk033', {
-   *         name              : 'Acme Co.',
-   *         numberOfEmployees : 42,
-   *         location          : 'San Francisco'
-   *     });
-   *
-   * @param {String} groupId - The ID you recognize the group by.
-   *
-   * @param {Object} properties (optional) - A dictionary of properties you know
-   * about the group. Things like `numberOfEmployees`, `location`, etc.
-   *
-   * @param {Object} options (optional) - Settings for the group call.
-   *
-   * @param {Function} callback (optional) - A function to call after a small
-   * timeout, giving the group call time to make requests.
-   */
-
-  group : function (groupId, properties, options, callback) {
-    if (!this.initialized) return;
-
-    // Allow for optional arguments.
-    if (type(options) === 'function') {
-      callback = options;
-      options = undefined;
-    }
-    if (type(properties) === 'function') {
-      callback = properties;
-      properties = undefined;
-    }
-
-    // Clone `properties` before we manipulate it, so we don't do anything bad,
-    // and back it by an empty object so that providers can assume it exists.
-    properties = clone(properties) || {};
-
-    // Convert dates from more types of input into Date objects.
-    if (properties.created) properties.created = newDate(properties.created);
-
-    // Call `group` on all of our enabled providers that support it.
-    each(this.providers, function (provider) {
-      if (provider.group && isEnabled(provider, options)) {
-        var args = [groupId, clone(properties), clone(options)];
-        if (provider.ready) {
-          provider.group.apply(provider, args);
-        } else {
-          provider.enqueue('group', args);
-        }
-      }
-    });
-
-    // If we have a callback, call it after a small timeout.
-    if (callback && type(callback) === 'function') {
-      setTimeout(callback, this.timeout);
-    }
-  },
-
-
-  /**
-   * Track
-   *
-   * Record an event (or action) that your user has triggered. For example:
-   *
-   *     analytics.track('Added a Friend', {
-   *         level  : 'hard',
-   *         volume : 11
-   *     });
-   *
-   * @param {String} event - The name of your event.
-   *
-   * @param {Object} properties (optional) - A dictionary of properties of the
-   * event. `properties` are all camelCase (we'll automatically conver them to
-   * the proper case each provider needs).
-   *
-   * @param {Object} options (optional) - Settings for the track call.
-   *
-   * @param {Function} callback - A function to call after a small
-   * timeout, giving the identify time to make requests.
-   */
-
-  track : function (event, properties, options, callback) {
-    if (!this.initialized) return;
-
-    // Allow for optional arguments.
-    if (type(options) === 'function') {
-      callback = options;
-      options = undefined;
-    }
-    if (type(properties) === 'function') {
-      callback = properties;
-      properties = undefined;
-    }
-
-    // Call `track` on all of our enabled providers that support it.
-    each(this.providers, function (provider) {
-      if (provider.track && isEnabled(provider, options)) {
-        var args = [event, clone(properties), clone(options)];
-        if (provider.ready) {
-          provider.track.apply(provider, args);
-        } else {
-          provider.enqueue('track', args);
-        }
-      }
-    });
-
-    if (callback && type(callback) === 'function') {
-      setTimeout(callback, this.timeout);
-    }
-  },
-
-
-  /**
-   * Track Link
-   *
-   * A helper for tracking outbound links that would normally navigate away from
-   * the page before the track requests were made. It works by wrapping the
-   * calls in a short timeout, giving the requests time to fire.
-   *
-   * @param {Element|Array} links - The link element or array of link elements
-   * to bind to. (Allowing arrays makes it easy to pass in jQuery objects.)
-   *
-   * @param {String|Function} event - Passed directly to `track`. Or in the case
-   * that it's a function, it will be called with the link element as the first
-   * argument.
-   *
-   * @param {Object|Function} properties (optional) - Passed directly to
-   * `track`. Or in the case that it's a function, it will be called with the
-   * link element as the first argument.
-   */
-
-  trackLink : function (links, event, properties) {
-    if (!links) return;
-
-    // Turn a single link into an array so that we're always handling
-    // arrays, which allows for passing jQuery objects.
-    if ('element' === type(links)) links = [links];
-
-    var self               = this
-      , eventFunction      = 'function' === type(event)
-      , propertiesFunction = 'function' === type(properties);
-
-    each(links, function (el) {
-      bind(el, 'click', function (e) {
-
-        // Allow for `event` or `properties` to be a function. And pass it the
-        // link element that was clicked.
-        var newEvent      = eventFunction ? event(el) : event;
-        var newProperties = propertiesFunction ? properties(el) : properties;
-
-        self.track(newEvent, newProperties);
-
-        // To justify us preventing the default behavior we must:
-        //
-        // * Have an `href` to use.
-        // * Not have a `target="_blank"` attribute.
-        // * Not have any special keys pressed, because they might be trying to
-        //   open in a new tab, or window, or download.
-        //
-        // This might not cover all cases, but we'd rather throw out an event
-        // than miss a case that breaks the user experience.
-        if (el.href && el.target !== '_blank' && !isMeta(e)) {
-
-          preventDefault(e);
-
-          // Navigate to the url after just enough of a timeout.
-          setTimeout(function () {
-            window.location.href = el.href;
-          }, self.timeout);
-        }
-      });
-    });
-  },
-
-
-  /**
-   * Track Form
-   *
-   * Similar to `trackClick`, this is a helper for tracking form submissions
-   * that would normally navigate away from the page before a track request can
-   * be sent. It works by preventing the default submit event, sending our
-   * track requests, and then submitting the form programmatically.
-   *
-   * @param {Element|Array} forms - The form element or array of form elements
-   * to bind to. (Allowing arrays makes it easy to pass in jQuery objects.)
-   *
-   * @param {String|Function} event - Passed directly to `track`. Or in the case
-   * that it's a function, it will be called with the form element as the first
-   * argument.
-   *
-   * @param {Object|Function} properties (optional) - Passed directly to
-   * `track`. Or in the case that it's a function, it will be called with the
-   * form element as the first argument.
-   */
-
-  trackForm : function (form, event, properties) {
-    if (!form) return;
-
-    // Turn a single element into an array so that we're always handling arrays,
-    // which allows for passing jQuery objects.
-    if ('element' === type(form)) form = [form];
-
-    var self               = this
-      , eventFunction      = 'function' === type(event)
-      , propertiesFunction = 'function' === type(properties);
-
-    each(form, function (el) {
-      var handler = function (e) {
-
-        // Allow for `event` or `properties` to be a function. And pass it the
-        // form element that was submitted.
-        var newEvent      = eventFunction ? event(el) : event;
-        var newProperties = propertiesFunction ? properties(el) : properties;
-
-        self.track(newEvent, newProperties);
-
-        preventDefault(e);
-
-        // Submit the form after a timeout, giving the event time to fire.
-        setTimeout(function () {
-          el.submit();
-        }, self.timeout);
-      };
-
-      // Support the form being submitted via jQuery instead of for real. This
-      // doesn't happen automatically because `el.submit()` doesn't actually
-      // fire submit handlers, which is what jQuery uses internally. >_<
-      var dom = window.jQuery || window.Zepto;
-      if (dom) {
-        dom(el).submit(handler);
-      } else {
-        bind(el, 'submit', handler);
-      }
-    });
-  },
-
-
-  /**
-   * Pageview
-   *
-   * Simulate a pageview in single-page applications, where real pageviews don't
-   * occur. This isn't support by all providers.
-   *
-   * @param {String} url (optional) - The path of the page (eg. '/login'). Most
-   * providers will default to the current pages URL, so you don't need this.
-   *
-   * @param {Object} options (optional) - Settings for the pageview call.
-   *
-   */
-
-  pageview : function (url,options) {
-    if (!this.initialized) return;
-
-    // Call `pageview` on all of our enabled providers that support it.
-    each(this.providers, function (provider) {
-      if (provider.pageview && isEnabled(provider, options)) {
-        var args = [url];
-        if (provider.ready) {
-          provider.pageview.apply(provider, args);
-        } else {
-          provider.enqueue('pageview', args);
-        }
-      }
-    });
-  },
-
-
-  /**
-   * Alias
-   *
-   * Merges two previously unassociate user identities. This comes in handy if
-   * the same user visits from two different devices and you want to combine
-   * their analytics history.
-   *
-   * Some providers don't support merging users.
-   *
-   * @param {String} newId - The new ID you want to recognize the user by.
-   *
-   * @param {String} originalId (optional) - The original ID that the user was
-   * recognized by. This defaults to the current identified user's ID if there
-   * is one. In most cases you don't need to pass in the `originalId`.
-   */
-
-  alias : function (newId, originalId, options) {
-    if (!this.initialized) return;
-
-    if (type(originalId) === 'object') {
-      options    = originalId;
-      originalId = undefined;
-    }
-
-    // Call `alias` on all of our enabled providers that support it.
-    each(this.providers, function (provider) {
-      if (provider.alias && isEnabled(provider, options)) {
-        var args = [newId, originalId];
-        if (provider.ready) {
-          provider.alias.apply(provider, args);
-        } else {
-          provider.enqueue('alias', args);
-        }
-      }
-    });
-  },
-
-
-  /**
-   * Log
-   *
-   * Log an error to analytics providers that support it, like Sentry.
-   *
-   * @param {Error|String} error - The error or string to log.
-   * @param {Object} properties - Properties about the error.
-   * @param {Object} options (optional) - Settings for the log call.
-   */
-
-  log : function (error, properties, options) {
-    if (!this.initialized) return;
-
-    each(this.providers, function (provider) {
-      if (provider.log && isEnabled(provider, options)) {
-        var args = [error, properties, options];
-        if (provider.ready) {
-          provider.log.apply(provider, args);
-        } else {
-          provider.enqueue('log', args);
-        }
-      }
-    });
-  }
-
-});
-
-
-/**
- * Backwards compatibility.
- */
-
-// Alias `trackClick` and `trackSubmit`.
-Analytics.prototype.trackClick = Analytics.prototype.trackLink;
-Analytics.prototype.trackSubmit = Analytics.prototype.trackForm;
-
-
-/**
- * Determine whether a provider is enabled or not based on the options object.
- *
- * @param {Object} provider - the current provider.
- * @param {Object} options - the current call's options.
- *
- * @return {Boolean} - wether the provider is enabled.
- */
-
-var isEnabled = function (provider, options) {
-  var enabled = true;
-  if (!options || !options.providers) return enabled;
-
-  // Default to the 'all' or 'All' setting.
-  var map = options.providers;
-  if (map.all !== undefined) enabled = map.all;
-  if (map.All !== undefined) enabled = map.All;
-
-  // Look for this provider's specific setting.
-  var name = provider.name;
-  if (map[name] !== undefined) enabled = map[name];
-
-  return enabled;
-};
-
-
-/**
- * Clean up traits, default some useful things both so the user doesn't have to
- * and so we don't have to do it on a provider-basis.
- *
- * @param {Object}  traits  The traits object.
- * @return {Object}         The new traits object.
- */
-
-var cleanTraits = function (userId, traits) {
-
-  // Add the `email` trait if it doesn't exist and the `userId` is an email.
-  if (!traits.email && isEmail(userId)) traits.email = userId;
-
-  // Create the `name` trait if it doesn't exist and `firstName` and `lastName`
-  // are both supplied.
-  if (!traits.name && traits.firstName && traits.lastName) {
-    traits.name = traits.firstName + ' ' + traits.lastName;
-  }
-
-  // Convert dates from more types of input into Date objects.
-  if (traits.created) traits.created = newDate(traits.created);
-  if (traits.company && traits.company.created) {
-    traits.company.created = newDate(traits.company.created);
-  }
-
-  return traits;
-};
-
-});
-require.register("analytics/src/cookie.js", function(exports, require, module){
-
-var bindAll   = require('bind-all')
-  , cookie    = require('cookie')
-  , clone     = require('clone')
-  , defaults  = require('defaults')
-  , json      = require('json')
-  , topDomain = require('top-domain');
-
-
-function Cookie (options) {
-  this.options(options);
-}
-
-/**
- * Get or set the cookie options
- *
- * @param  {Object} options
- *   @field {Number}  maxage (1 year)
- *   @field {String}  domain
- *   @field {String}  path
- *   @field {Boolean} secure
- */
-
-Cookie.prototype.options = function (options) {
-  if (arguments.length === 0) return this._options;
-
-  options || (options = {});
-
-  var domain = '.' + topDomain(window.location.href);
-
-  // localhost cookies are special: http://curl.haxx.se/rfc/cookie_spec.html
-  if (domain === '.localhost') domain = '';
-
-  defaults(options, {
-    maxage  : 31536000000, // default to a year
-    path    : '/',
-    domain  : domain
-  });
-
-  this._options = options;
-};
-
-
-/**
- * Set a value in our cookie
- *
- * @param  {String} key
- * @param  {Object} value
- * @return {Boolean} saved
- */
-
-Cookie.prototype.set = function (key, value) {
-  try {
-    value = json.stringify(value);
-    cookie(key, value, clone(this._options));
-    return true;
-  } catch (e) {
-    return false;
-  }
-};
-
-
-/**
- * Get a value from our cookie
- * @param  {String} key
- * @return {Object} value
- */
-
-Cookie.prototype.get = function (key) {
-  try {
-    var value = cookie(key);
-    value = value ? json.parse(value) : null;
-    return value;
-  } catch (e) {
-    return null;
-  }
-};
-
-
-/**
- * Remove a value from the cookie
- *
- * @param  {String}  key
- * @return {Boolean} removed
- */
-
-Cookie.prototype.remove = function (key) {
-  try {
-    cookie(key, null, clone(this._options));
-    return true;
-  } catch (e) {
-    return false;
-  }
-};
-
-
-/**
- * Export singleton cookie
- */
-
-module.exports = bindAll(new Cookie());
-
-
-module.exports.Cookie = Cookie;
-
-});
-require.register("analytics/src/localStore.js", function(exports, require, module){
-
-var bindAll  = require('bind-all')
-  , defaults = require('defaults')
-  , store    = require('store');
-
-
-function Store (options) {
-  this.options(options);
-}
-
-
-/**
- * Sets the options for the store
- *
- * @param  {Object} options
- *   @field {Boolean} enabled (true)
- */
-
-Store.prototype.options = function (options) {
-  if (arguments.length === 0) return this._options;
-
-  options || (options = {});
-  defaults(options, { enabled : true });
-
-  this.enabled  = options.enabled && store.enabled;
-  this._options = options;
-};
-
-
-/**
- * Sets a value in local storage
- *
- * @param  {String} key
- * @param  {Object} value
- */
-
-Store.prototype.set = function (key, value) {
-  if (!this.enabled) return false;
-  return store.set(key, value);
-};
-
-
-/**
- * Gets a value from local storage
- *
- * @param  {String} key
+ * @param {String} str
  * @return {Object}
+ * @api public
  */
 
-Store.prototype.get = function (key) {
-  if (!this.enabled) return null;
-  return store.get(key);
-};
+exports.parse = function(str){
+  if ('string' != typeof str) return {};
 
+  str = trim(str);
+  if ('' == str) return {};
+  if ('?' == str.charAt(0)) str = str.slice(1);
 
-/**
- * Removes a value from local storage
- *
- * @param  {String} key
- */
+  var obj = {};
+  var pairs = str.split('&');
+  for (var i = 0; i < pairs.length; i++) {
+    var parts = pairs[i].split('=');
+    var key = decode(parts[0]);
+    var m;
 
-Store.prototype.remove = function (key) {
-  if (!this.enabled) return false;
-  return store.remove(key);
-};
-
-
-/**
- * Singleton exports
- */
-
-module.exports = bindAll(new Store());
-});
-require.register("analytics/src/provider.js", function(exports, require, module){
-var each   = require('each')
-  , extend = require('extend')
-  , type   = require('type');
-
-
-module.exports = Provider;
-
-
-/**
- * Provider
- *
- * @param {Object} options - settings to initialize the Provider with. This will
- * be merged with the Provider's own defaults.
- *
- * @param {Function} ready - a ready callback, to be called when the provider is
- * ready to handle analytics calls.
- */
-
-function Provider (options, ready, analytics) {
-  var self = this;
-
-  // Store the reference to the global `analytics` object.
-  this.analytics = analytics;
-
-  // Make a queue of `{ method : 'identify', args : [] }` to unload once ready.
-  this.queue = [];
-  this.ready = false;
-
-  // Allow for `options` to only be a string if the provider has specified
-  // a default `key`, in which case convert `options` into a dictionary. Also
-  // allow for it to be `true`, like in Optimizely's case where there is no need
-  // for any default key.
-  if (type(options) !== 'object') {
-    if (options === true) {
-      options = {};
-    } else if (this.key) {
-      var key = options;
-      options = {};
-      options[this.key] = key;
-    } else {
-      throw new Error('Couldnt resolve options.');
+    if (m = /(\w+)\[(\d+)\]/.exec(key)) {
+      obj[m[1]] = obj[m[1]] || [];
+      obj[m[1]][m[2]] = decode(parts[1]);
+      continue;
     }
+
+    obj[parts[0]] = null == parts[1]
+      ? ''
+      : decode(parts[1]);
   }
 
-  // Extend the passed-in options with our defaults.
-  this.options = extend({}, this.defaults, options);
-
-  // Wrap our ready function, so that it ready from our internal queue first
-  // and then marks us as ready.
-  var dequeue = function () {
-    each(self.queue, function (call) {
-      var method = call.method
-        , args   = call.args;
-      self[method].apply(self, args);
-    });
-    self.ready = true;
-    self.queue = [];
-    ready();
-  };
-
-  // Call our initialize method.
-  this.initialize.call(this, this.options, dequeue);
-}
-
-
-/**
- * Inheritance helper.
- *
- * Modeled after Backbone's `extend` method:
- * https://github.com/documentcloud/backbone/blob/master/backbone.js#L1464
- */
-
-Provider.extend = function (properties) {
-  var parent = this;
-  var child = function () { return parent.apply(this, arguments); };
-  var Surrogate = function () { this.constructor = child; };
-  Surrogate.prototype = parent.prototype;
-  child.prototype = new Surrogate();
-  extend(child.prototype, properties);
-  return child;
+  return obj;
 };
 
-
 /**
- * Augment Provider's prototype.
+ * Stringify the given `obj`.
+ *
+ * @param {Object} obj
+ * @return {String}
+ * @api public
  */
 
-extend(Provider.prototype, {
+exports.stringify = function(obj){
+  if (!obj) return '';
+  var pairs = [];
 
-  /**
-   * Default settings for the provider.
-   */
+  for (var key in obj) {
+    var value = obj[key];
 
-  options : {},
+    if ('array' == type(value)) {
+      for (var i = 0; i < value.length; ++i) {
+        pairs.push(encode(key + '[' + i + ']') + '=' + encode(value[i]));
+      }
+      continue;
+    }
+
+    pairs.push(encode(key) + '=' + encode(obj[key]));
+  }
+
+  return pairs.join('&');
+};
+
+}, {"trim":52,"type":45}],
+27: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var Entity = require('./entity');
+var bind = require('bind');
+var cookie = require('./cookie');
+var debug = require('debug')('analytics:user');
+var inherit = require('inherit');
+var rawCookie = require('cookie');
+var uuid = require('uuid');
 
 
-  /**
-   * The single required API key for the provider. This lets us support a terse
-   * initialization syntax:
-   *
-   *     analytics.initialize({
-   *       'Provider' : 'XXXXXXX'
-   *     });
-   *
-   * Only add this if the provider has a _single_ required key.
-   */
+/**
+ * User defaults
+ */
 
-  key : undefined,
-
-
-  /**
-   * Initialize our provider.
-   *
-   * @param {Object} options - the settings for the provider.
-   * @param {Function} ready - a ready callback to call when we're ready to
-   * start accept analytics method calls.
-   */
-  initialize : function (options, ready) {
-    ready();
+User.defaults = {
+  persist: true,
+  cookie: {
+    key: 'ajs_user_id',
+    oldKey: 'ajs_user'
   },
-
-
-  /**
-   * Adds an item to the our internal pre-ready queue.
-   *
-   * @param {String} method - the analytics method to call (eg. 'track').
-   * @param {Object} args - the arguments to pass to the method.
-   */
-  enqueue : function (method, args) {
-    this.queue.push({
-      method : method,
-      args : args
-    });
+  localStorage: {
+    key: 'ajs_user_traits'
   }
-
-});
-});
-require.register("analytics/src/user.js", function(exports, require, module){
-var bindAll    = require('bind-all')
-  , clone      = require('clone')
-  , cookie     = require('./cookie')
-  , defaults   = require('defaults')
-  , extend     = require('extend')
-  , localStore = require('./localStore');
+};
 
 
-function User (options) {
-  this._id     = null;
-  this._traits = {};
-  this.options(options);
+/**
+ * Initialize a new `User` with `options`.
+ *
+ * @param {Object} options
+ */
+
+function User(options) {
+  this.defaults = User.defaults;
+  this.debug = debug;
+  Entity.call(this, options);
 }
 
 
 /**
- * Sets the options for the user
- *
- * @param  {Object} options
- *   @field {Object}  cookie
- *   @field {Object}  localStorage
- *   @field {Boolean} persist (true)
+ * Inherit `Entity`
  */
 
-User.prototype.options = function (options) {
-  options || (options = {});
+inherit(User, Entity);
 
-  defaults(options, {
-    persist : true
-  });
+/**
+ * Set/get the user id.
+ *
+ * When the user id changes, the method will reset his anonymousId to a new one.
+ *
+ * // FIXME: What are the mixed types?
+ * @param {string} id
+ * @return {Mixed}
+ * @example
+ * // didn't change because the user didn't have previous id.
+ * anonymousId = user.anonymousId();
+ * user.id('foo');
+ * assert.equal(anonymousId, user.anonymousId());
+ *
+ * // didn't change because the user id changed to null.
+ * anonymousId = user.anonymousId();
+ * user.id('foo');
+ * user.id(null);
+ * assert.equal(anonymousId, user.anonymousId());
+ *
+ * // change because the user had previous id.
+ * anonymousId = user.anonymousId();
+ * user.id('foo');
+ * user.id('baz'); // triggers change
+ * user.id('baz'); // no change
+ * assert.notEqual(anonymousId, user.anonymousId());
+ */
 
-  this.cookie(options.cookie);
-  this.localStorage(options.localStorage);
-  this.persist = options.persist;
+User.prototype.id = function(id){
+  var prev = this._getId();
+  var ret = Entity.prototype.id.apply(this, arguments);
+  if (prev == null) return ret;
+  // FIXME: We're relying on coercion here (1 == "1"), but our API treats these
+  // two values differently. Figure out what will break if we remove this and
+  // change to strict equality
+  /* eslint-disable eqeqeq */
+  if (prev != id && id) this.anonymousId(null);
+  /* eslint-enable eqeqeq */
+  return ret;
+};
+
+/**
+ * Set / get / remove anonymousId.
+ *
+ * @param {String} anonymousId
+ * @return {String|User}
+ */
+
+User.prototype.anonymousId = function(anonymousId){
+  var store = this.storage();
+
+  // set / remove
+  if (arguments.length) {
+    store.set('ajs_anonymous_id', anonymousId);
+    return this;
+  }
+
+  // new
+  anonymousId = store.get('ajs_anonymous_id');
+  if (anonymousId) {
+    return anonymousId;
+  }
+
+  // old - it is not stringified so we use the raw cookie.
+  anonymousId = rawCookie('_sio');
+  if (anonymousId) {
+    anonymousId = anonymousId.split('----')[0];
+    store.set('ajs_anonymous_id', anonymousId);
+    store.remove('_sio');
+    return anonymousId;
+  }
+
+  // empty
+  anonymousId = uuid();
+  store.set('ajs_anonymous_id', anonymousId);
+  return store.get('ajs_anonymous_id');
+};
+
+/**
+ * Remove anonymous id on logout too.
+ */
+
+User.prototype.logout = function(){
+  Entity.prototype.logout.call(this);
+  this.anonymousId(null);
+};
+
+/**
+ * Load saved user `id` or `traits` from storage.
+ */
+
+User.prototype.load = function() {
+  if (this._loadOldCookie()) return;
+  Entity.prototype.load.call(this);
 };
 
 
 /**
- * Get or set cookie options
+ * BACKWARDS COMPATIBILITY: Load the old user from the cookie.
  *
- * @param  {Object} options
+ * @api private
+ * @return {boolean}
  */
 
-User.prototype.cookie = function (options) {
-  if (arguments.length === 0) return this.cookieOptions;
-
-  options || (options = {});
-  defaults(options, {
-    key    : 'ajs_user_id',
-    oldKey : 'ajs_user'
-  });
-  this.cookieOptions = options;
-};
-
-
-/**
- * Get or set local storage options
- *
- * @param  {Object} options
- */
-
-User.prototype.localStorage = function (options) {
-  if (arguments.length === 0) return this.localStorageOptions;
-
-  options || (options = {});
-  defaults(options, {
-    key    : 'ajs_user_traits'
-  });
-  this.localStorageOptions = options;
-};
-
-
-/**
- * Get or set the user id
- *
- * @param  {String} id
- */
-
-User.prototype.id = function (id) {
-  if (arguments.length === 0) return this._id;
-  this._id = id;
-};
-
-
-/**
- * Get or set the user traits
- *
- * @param  {Object} traits
- */
-
-User.prototype.traits = function (traits) {
-  if (arguments.length === 0) return clone(this._traits);
-  traits || (traits = {});
-
-  this._traits = traits;
-};
-
-
-/**
- * Updates the current stored user with id and traits.
- *
- * @param {String} userId - the new user ID.
- * @param {Object} traits - any new traits.
- * @return {Boolean} whether alias should be called.
- */
-
-User.prototype.update = function (userId, traits) {
-
-  // Make an alias call if there was no previous userId, there is one
-  // now, and we are using a cookie between page loads.
-  var alias = !this.id() && userId && this.persist;
-
-  traits || (traits = {});
-
-  // If there is a current user and the new user isn't the same,
-  // we want to just replace their traits. Otherwise extend.
-  if (this.id() && userId && this.id() !== userId) this.traits(traits);
-  else this.traits(extend(this.traits(), traits));
-
-  if (userId) this.id(userId);
-
-  this.save();
-
-  return alias;
-};
-
-
-/**
- * Save the user to localstorage and cookie
- *
- * @return {Boolean} saved
- */
-
-User.prototype.save = function () {
-  if (!this.persist) return false;
-
-  cookie.set(this.cookie().key, this.id());
-  localStore.set(this.localStorage().key, this.traits());
-  return true;
-};
-
-
-/**
- * Loads a saved user, and set its information
- *
- * @return {Object} user
- */
-
-User.prototype.load = function () {
-  if (this.loadOldCookie()) return this.toJSON();
-
-  var id     = cookie.get(this.cookie().key)
-    , traits = localStore.get(this.localStorage().key);
-
-  this.id(id);
-  this.traits(traits);
-  return this.toJSON();
-};
-
-
-/**
- * Clears the user, and removes the stored version
- *
- */
-
-User.prototype.clear = function () {
-  cookie.remove(this.cookie().key);
-  localStore.remove(this.localStorage().key);
-  this.id(null);
-  this.traits({});
-};
-
-
-/**
- * Load the old user from the cookie. Should be phased
- * out at some point
- *
- * @return {Boolean} loaded
- */
-
-User.prototype.loadOldCookie = function () {
-  var user = cookie.get(this.cookie().oldKey);
+User.prototype._loadOldCookie = function() {
+  var user = cookie.get(this._options.cookie.oldKey);
   if (!user) return false;
 
   this.id(user.id);
   this.traits(user.traits);
-  cookie.remove(this.cookie().oldKey);
+  cookie.remove(this._options.cookie.oldKey);
   return true;
 };
 
 
 /**
- * Get the user info
+ * Expose the user singleton.
+ */
+
+module.exports = bind.all(new User());
+
+
+/**
+ * Expose the `User` constructor.
+ */
+
+module.exports.User = User;
+
+}, {"./entity":64,"bind":9,"./cookie":12,"debug":13,"inherit":65,"cookie":56,"uuid":76}],
+76: [function(require, module, exports) {
+
+/**
+ * Taken straight from jed's gist: https://gist.github.com/982883
  *
- * @return {Object}
+ * Returns a random v4 UUID of the form xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx,
+ * where each x is replaced with a random hexadecimal digit from 0 to f, and
+ * y is replaced with a random hexadecimal digit from 8 to b.
  */
 
-User.prototype.toJSON = function () {
-  return {
-    id     : this.id(),
-    traits : this.traits()
+module.exports = function uuid(a){
+  return a           // if the placeholder was passed, return
+    ? (              // a random number from 0 to 15
+      a ^            // unless b is 8,
+      Math.random()  // in which case
+      * 16           // a random number from
+      >> a/4         // 8 to 11
+      ).toString(16) // in hexadecimal
+    : (              // or otherwise a concatenated string:
+      [1e7] +        // 10000000 +
+      -1e3 +         // -1000 +
+      -4e3 +         // -4000 +
+      -8e3 +         // -80000000 +
+      -1e11          // -100000000000,
+      ).replace(     // replacing
+        /[018]/g,    // zeroes, ones, and eights with
+        uuid         // random hex digits
+      )
+};
+}, {}],
+3: [function(require, module, exports) {
+/* eslint quote-props: 0 */
+'use strict';
+
+module.exports = {
+  'google-analytics': require('analytics.js-integration-google-analytics'),
+  'google-tag-manager': require('analytics.js-integration-google-tag-manager'),
+  'heap': require('analytics.js-integration-heap'),
+  'hubspot': require('analytics.js-integration-hubspot'),
+  'intercom': require('analytics.js-integration-intercom'),
+  'kissmetrics': require('analytics.js-integration-kissmetrics'),
+  'optimizely': require('analytics.js-integration-optimizely')
+};
+
+}, {"analytics.js-integration-google-analytics":77,"analytics.js-integration-google-tag-manager":78,"analytics.js-integration-heap":79,"analytics.js-integration-hubspot":80,"analytics.js-integration-intercom":81,"analytics.js-integration-kissmetrics":82,"analytics.js-integration-optimizely":83}],
+77: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var Track = require('facade').Track;
+var defaults = require('defaults');
+var dot = require('obj-case');
+var each = require('each');
+var integration = require('analytics.js-integration');
+var is = require('is');
+var keys = require('object').keys;
+var len = require('object').length;
+var push = require('global-queue')('_gaq');
+var select = require('select');
+var useHttps = require('use-https');
+var user;
+
+/**
+ * Expose plugin.
+ */
+
+module.exports = exports = function(analytics) {
+  analytics.addIntegration(GA);
+  user = analytics.user();
+};
+
+/**
+ * Expose `GA` integration.
+ *
+ * http://support.google.com/analytics/bin/answer.py?hl=en&answer=2558867
+ * https://developers.google.com/analytics/devguides/collection/gajs/methods/gaJSApiBasicConfiguration#_gat.GA_Tracker_._setSiteSpeedSampleRate
+ */
+
+var GA = exports.Integration = integration('Google Analytics')
+  .readyOnLoad()
+  .global('ga')
+  .global('gaplugins')
+  .global('_gaq')
+  .global('GoogleAnalyticsObject')
+  .option('anonymizeIp', false)
+  .option('classic', false)
+  .option('dimensions', {})
+  .option('domain', 'auto')
+  .option('doubleClick', false)
+  .option('enhancedEcommerce', false)
+  .option('enhancedLinkAttribution', false)
+  .option('ignoredReferrers', null)
+  .option('includeSearch', false)
+  .option('metrics', {})
+  .option('nonInteraction', false)
+  .option('sendUserId', false)
+  .option('siteSpeedSampleRate', 1)
+  .option('trackCategorizedPages', true)
+  .option('trackNamedPages', true)
+  .option('trackingId', '')
+  .tag('library', '<script src="//www.google-analytics.com/analytics.js">')
+  .tag('double click', '<script src="//stats.g.doubleclick.net/dc.js">')
+  .tag('http', '<script src="http://www.google-analytics.com/ga.js">')
+  .tag('https', '<script src="https://ssl.google-analytics.com/ga.js">');
+
+/**
+ * On `construct` swap any config-based methods to the proper implementation.
+ */
+
+GA.on('construct', function(integration) {
+  if (integration.options.classic) {
+    integration.initialize = integration.initializeClassic;
+    integration.loaded = integration.loadedClassic;
+    integration.page = integration.pageClassic;
+    integration.track = integration.trackClassic;
+    integration.completedOrder = integration.completedOrderClassic;
+  } else if (integration.options.enhancedEcommerce) {
+    integration.viewedProduct = integration.viewedProductEnhanced;
+    integration.clickedProduct = integration.clickedProductEnhanced;
+    integration.addedProduct = integration.addedProductEnhanced;
+    integration.removedProduct = integration.removedProductEnhanced;
+    integration.startedOrder = integration.startedOrderEnhanced;
+    integration.viewedCheckoutStep = integration.viewedCheckoutStepEnhanced;
+    integration.completedCheckoutStep = integration.completedCheckoutStepEnhanced;
+    integration.updatedOrder = integration.updatedOrderEnhanced;
+    integration.completedOrder = integration.completedOrderEnhanced;
+    integration.refundedOrder = integration.refundedOrderEnhanced;
+    integration.viewedPromotion = integration.viewedPromotionEnhanced;
+    integration.clickedPromotion = integration.clickedPromotionEnhanced;
+  }
+});
+
+/**
+ * Initialize.
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/advanced
+ */
+
+GA.prototype.initialize = function() {
+  var opts = this.options;
+
+  // setup the tracker globals
+  window.GoogleAnalyticsObject = 'ga';
+  window.ga = window.ga || function() {
+    window.ga.q = window.ga.q || [];
+    window.ga.q.push(arguments);
   };
+  window.ga.l = new Date().getTime();
+
+  if (window.location.hostname === 'localhost') opts.domain = 'none';
+
+  window.ga('create', opts.trackingId, {
+    // Fall back on default to protect against empty string
+    cookieDomain: opts.domain || GA.prototype.defaults.domain,
+    siteSpeedSampleRate: opts.siteSpeedSampleRate,
+    allowLinker: true
+  });
+
+  // display advertising
+  if (opts.doubleClick) {
+    window.ga('require', 'displayfeatures');
+  }
+
+  // send global id
+  if (opts.sendUserId && user.id()) {
+    window.ga('set', 'userId', user.id());
+  }
+
+  // anonymize after initializing, otherwise a warning is shown
+  // in google analytics debugger
+  if (opts.anonymizeIp) window.ga('set', 'anonymizeIp', true);
+
+  // custom dimensions & metrics
+  var custom = metrics(user.traits(), opts);
+  if (len(custom)) window.ga('set', custom);
+
+  this.load('library', this.ready);
 };
 
-
 /**
- * Export the new user as a singleton.
+ * Loaded?
+ *
+ * @return {Boolean}
  */
 
-module.exports = bindAll(new User());
+GA.prototype.loaded = function() {
+  return !!window.gaplugins;
+};
 
-});
-require.register("analytics/src/utils.js", function(exports, require, module){
-// A helper to track events based on the 'anjs' url parameter
-exports.getUrlParameter = function (urlSearchParameter, paramKey) {
-  var params = urlSearchParameter.replace('?', '').split('&');
-  for (var i = 0; i < params.length; i += 1) {
-    var param = params[i].split('=');
-    if (param.length === 2 && param[0] === paramKey) {
-      return decodeURIComponent(param[1]);
-    }
+/**
+ * Page.
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/pages
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/single-page-applications#multiple-hits
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+GA.prototype.page = function(page) {
+  var category = page.category();
+  var props = page.properties();
+  var name = page.fullName();
+  var opts = this.options;
+  var campaign = page.proxy('context.campaign') || {};
+  var pageview = {};
+  var pagePath = path(props, this.options);
+  var pageTitle = name || props.title;
+  var track;
+
+  // store for later
+  // TODO: Why? Document this better
+  this._category = category;
+
+  pageview.page = pagePath;
+  pageview.title = pageTitle;
+  pageview.location = props.url;
+
+  if (campaign.name) pageview.campaignName = campaign.name;
+  if (campaign.source) pageview.campaignSource = campaign.source;
+  if (campaign.medium) pageview.campaignMedium = campaign.medium;
+  if (campaign.content) pageview.campaignContent = campaign.content;
+  if (campaign.term) pageview.campaignKeyword = campaign.term;
+
+  // custom dimensions and metrics
+  var custom = metrics(props, opts);
+  if (len(custom)) window.ga('set', custom);
+
+  // set
+  window.ga('set', { page: pagePath, title: pageTitle });
+
+  // send
+  window.ga('send', 'pageview', pageview);
+
+  // categorized pages
+  if (category && this.options.trackCategorizedPages) {
+    track = page.track(category);
+    this.track(track, { nonInteraction: 1 });
+  }
+
+  // named pages
+  if (name && this.options.trackNamedPages) {
+    track = page.track(name);
+    this.track(track, { nonInteraction: 1 });
   }
 };
-});
-require.register("analytics/src/providers/adroll.js", function(exports, require, module){
-// https://www.adroll.com/dashboard
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'AdRoll',
-
-  defaults : {
-    // Adroll requires two options: `advId` and `pixId`.
-    advId : null,
-    pixId : null
-  },
-
-  initialize : function (options, ready) {
-    window.adroll_adv_id = options.advId;
-    window.adroll_pix_id = options.pixId;
-    window.__adroll_loaded = true;
-
-    load({
-      http  : 'http://a.adroll.com/j/roundtrip.js',
-      https : 'https://s.adroll.com/j/roundtrip.js'
-    }, ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/amplitude.js", function(exports, require, module){
-// https://github.com/amplitude/Amplitude-Javascript
-
-var Provider = require('../provider')
-  , alias    = require('alias')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Amplitude',
-
-  key : 'apiKey',
-
-  defaults : {
-    // Amplitude's required API key.
-    apiKey : null,
-    // Whether to track pageviews to Amplitude.
-    pageview : false
-  },
-
-  initialize : function (options, ready) {
-    // Create the Amplitude global and queuer methods.
-    (function(e,t){var r=e.amplitude||{};
-    r._q=[];function i(e){r[e]=function(){r._q.push([e].concat(Array.prototype.slice.call(arguments,0)))}}
-    var s=["init","logEvent","setUserId","setGlobalUserProperties","setVersionName"];
-    for(var c=0;c<s.length;c++){i(s[c])}e.amplitude=r})(window,document);
-
-    // Load the Amplitude script and initialize with the API key.
-    load('https://d24n15hnbwhuhn.cloudfront.net/libs/amplitude-1.0-min.js');
-    window.amplitude.init(options.apiKey);
-
-    // Amplitude creates a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    if (userId) window.amplitude.setUserId(userId);
-    if (traits) window.amplitude.setGlobalUserProperties(traits);
-  },
-
-  track : function (event, properties) {
-    window.amplitude.logEvent(event, properties);
-  },
-
-  pageview : function (url) {
-    if (!this.options.pageview) return;
-
-    var properties = {
-      url  : url || document.location.href,
-      name : document.title
-    };
-
-    this.track('Loaded a Page', properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/bitdeli.js", function(exports, require, module){
-// https://bitdeli.com/docs
-// https://bitdeli.com/docs/javascript-api.html
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Bitdeli',
-
-  defaults : {
-    // BitDeli requires two options: `inputId` and `authToken`.
-    inputId : null,
-    authToken : null,
-    // Whether or not to track an initial pageview when the page first
-    // loads. You might not want this if you're using a single-page app.
-    initialPageview : true
-  },
-
-
-  initialize : function (options, ready) {
-    window._bdq = window._bdq || [];
-    window._bdq.push(["setAccount", options.inputId, options.authToken]);
-
-    if (options.initialPageview) this.pageview();
-
-    load('//d2flrkr957qc5j.cloudfront.net/bitdeli.min.js');
-
-    // Bitdeli just uses a queue, so it's ready right away.
-    ready();
-  },
-
-
-  // Bitdeli uses two separate methods: `identify` for storing the `userId`
-  // and `set` for storing `traits`.
-  identify : function (userId, traits) {
-    if (userId) window._bdq.push(['identify', userId]);
-    if (traits) window._bdq.push(['set', traits]);
-  },
-
-
-  track : function (event, properties) {
-    window._bdq.push(['track', event, properties]);
-  },
-
-
-  // If `url` is undefined, Bitdeli uses the current page URL instead.
-  pageview : function (url) {
-    window._bdq.push(['trackPageview', url]);
-  }
-
-});
-});
-require.register("analytics/src/providers/bugherd.js", function(exports, require, module){
-// http://support.bugherd.com/home
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'BugHerd',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null,
-    // Optionally hide the feedback tab if you want to build your own.
-    // http://support.bugherd.com/entries/21497629-Create-your-own-Send-Feedback-tab
-    showFeedbackTab : true
-  },
-
-  initialize : function (options, ready) {
-    if (!options.showFeedbackTab) {
-        window.BugHerdConfig = { "feedback" : { "hide" : true } };
-    }
-    load('//www.bugherd.com/sidebarv2.js?apikey=' + options.apiKey, ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/chartbeat.js", function(exports, require, module){
-// http://chartbeat.com/docs/adding_the_code/
-// http://chartbeat.com/docs/configuration_variables/
-// http://chartbeat.com/docs/handling_virtual_page_changes/
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Chartbeat',
-
-  defaults : {
-    // Chartbeat requires two options: `domain` and `uid`. All other
-    // configuration options are passed straight in!
-    domain : null,
-    uid    : null
-  },
-
-
-  initialize : function (options, ready) {
-    // Since all the custom options just get passed through, update the
-    // Chartbeat `_sf_async_config` variable with options.
-    window._sf_async_config = options;
-
-    // Chartbeat's javascript should only load after the body
-    // is available, see https://github.com/segmentio/analytics.js/issues/107
-    var loadChartbeat = function () {
-      // We loop until the body is available.
-      if (!document.body) return setTimeout(loadChartbeat, 5);
-
-      // Use the stored date from when chartbeat was loaded.
-      window._sf_endpt = (new Date()).getTime();
-
-      // Load the Chartbeat javascript.
-      load({
-        https : 'https://a248.e.akamai.net/chartbeat.download.akamai.com/102508/js/chartbeat.js',
-        http  : 'http://static.chartbeat.com/js/chartbeat.js'
-      }, ready);
-    };
-    loadChartbeat();
-  },
-
-
-  pageview : function (url) {
-    // In case the Chartbeat library hasn't loaded yet.
-    if (!window.pSUPERFLY) return;
-
-    // Requires a path, so default to the current one.
-    window.pSUPERFLY.virtualPage(url || window.location.pathname);
-  }
-
-});
-});
-require.register("analytics/src/providers/clicktale.js", function(exports, require, module){
-// http://wiki.clicktale.com/Article/JavaScript_API
-
-var date     = require('load-date')
-  , Provider = require('../provider')
-  , load     = require('load-script')
-  , onBody   = require('on-body');
-
-module.exports = Provider.extend({
-
-  name : 'ClickTale',
-
-  key : 'projectId',
-
-  defaults : {
-
-    // If you sign up for a free account, this is the default http (non-ssl) CDN URL
-    // that you get. If you sign up for a premium account, you get a different
-    // custom CDN URL, so we have to leave it as an option.
-    httpCdnUrl     : 'http://s.clicktale.net/WRe0.js',
-
-    // SSL support is only for premium accounts. Each premium account seems to have
-    // a different custom secure CDN URL, so we have to leave it as an option.
-    httpsCdnUrl    : null,
-
-    // The Project ID is loaded in after the ClickTale CDN javascript has loaded.
-    projectId      : null,
-
-    // The recording ratio specifies what fraction of people to screen-record.
-    // ClickTale has a special calculator in their setup flow that tells you
-    // what number to set for this.
-    recordingRatio : 0.01,
-
-    // The Partition ID determines where ClickTale stores the data according to
-    // http://wiki.clicktale.com/Article/JavaScript_API
-    partitionId    : null
-  },
-
-
-  initialize : function (options, ready) {
-    // If we're on https:// but don't have a secure library, return early.
-    if (document.location.protocol === 'https:' && !options.httpsCdnUrl) return;
-
-    // ClickTale wants this at the "top" of the page. The analytics.js snippet
-    // sets this date synchronously now, and makes it available via load-date.
-    window.WRInitTime = date.getTime();
-
-    // Add the required ClickTale div to the body.
-    onBody(function (body) {
-      var div = document.createElement('div');
-      div.setAttribute('id', 'ClickTaleDiv');
-      div.setAttribute('style', 'display: none;');
-      body.appendChild(div);
-    });
-
-    var onloaded = function () {
-      window.ClickTale(
-        options.projectId,
-        options.recordingRatio,
-        options.partitionId
-      );
-      ready();
-    };
-
-    // If no SSL library is provided and we're on SSL then we can't load
-    // anything (always true for non-premium accounts).
-    load({
-      http  : options.httpCdnUrl,
-      https : options.httpsCdnUrl
-    }, onloaded);
-  },
-
-  identify : function (userId, traits) {
-    // We set the userId as the ClickTale UID.
-    if (window.ClickTaleSetUID) window.ClickTaleSetUID(userId);
-
-    // We iterate over all the traits and set them as key-value field pairs.
-    if (window.ClickTaleField) {
-      for (var traitKey in traits) {
-        window.ClickTaleField(traitKey, traits[traitKey]);
-      }
-    }
-  },
-
-  track : function (event, properties) {
-    // ClickTaleEvent is an alias for ClickTaleTag
-    if (window.ClickTaleEvent) window.ClickTaleEvent(event);
-  }
-
-});
-});
-require.register("analytics/src/providers/clicky.js", function(exports, require, module){
-// http://clicky.com/help/customization/manual?new-domain
-// http://clicky.com/help/customization/manual?new-domain#/help/customization#session
-
-var Provider = require('../provider')
-  , user     = require('../user')
-  , extend   = require('extend')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Clicky',
-
-  key : 'siteId',
-
-  defaults : {
-    siteId : null
-  },
-
-  initialize : function (options, ready) {
-    window.clicky_site_ids = window.clicky_site_ids || [];
-    window.clicky_site_ids.push(options.siteId);
-
-    var userId  = user.id()
-      , traits  = user.traits()
-      , session = {};
-
-    if (userId) session.id = userId;
-    extend(session, traits);
-
-    window.clicky_custom = { session : session };
-
-    load('//static.getclicky.com/js', ready);
-  },
-
-  track : function (event, properties) {
-    window.clicky.log(window.location.href, event);
-  }
-
-});
-});
-require.register("analytics/src/providers/comscore.js", function(exports, require, module){
-// http://direct.comscore.com/clients/help/FAQ.aspx#faqTagging
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'comScore',
-
-  key : 'c2',
-
-  defaults : {
-    c1 : '2',
-    c2 : null
-  },
-
-  // Pass the entire options object directly into comScore.
-  initialize : function (options, ready) {
-    window._comscore = window._comscore || [];
-    window._comscore.push(options);
-    load({
-      http  : 'http://b.scorecardresearch.com/beacon.js',
-      https : 'https://sb.scorecardresearch.com/beacon.js'
-    }, ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/crazyegg.js", function(exports, require, module){
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'CrazyEgg',
-
-  key : 'accountNumber',
-
-  defaults : {
-    accountNumber : null
-  },
-
-  initialize : function (options, ready) {
-    var accountPath = options.accountNumber.slice(0,4) + '/' + options.accountNumber.slice(4);
-    load('//dnn506yrbagrg.cloudfront.net/pages/scripts/'+accountPath+'.js?'+Math.floor(new Date().getTime()/3600000), ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/customerio.js", function(exports, require, module){
-// http://customer.io/docs/api/javascript.html
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Customer.io',
-
-  key : 'siteId',
-
-  defaults : {
-    siteId : null
-  },
-
-  initialize : function (options, ready) {
-    var _cio = window._cio = window._cio || [];
-    (function() {
-      var a,b,c;
-      a = function (f) {
-        return function () {
-          _cio.push([f].concat(Array.prototype.slice.call(arguments,0)));
-        };
-      };
-      b = ['identify', 'track'];
-      for (c = 0; c < b.length; c++) {
-        _cio[b[c]] = a(b[c]);
-      }
-    })();
-
-    // Load the Customer.io script and add the required `id` and `data-site-id`.
-    var script = load('https://assets.customer.io/assets/track.js');
-    script.id = 'cio-tracker';
-    script.setAttribute('data-site-id', options.siteId);
-
-    // Since Customer.io creates their required methods in their snippet, we
-    // don't need to wait to be ready.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // Don't do anything if we just have traits, because Customer.io
-    // requires a `userId`.
-    if (!userId) return;
-
-    // Customer.io takes the `userId` as part of the traits object.
-    traits.id = userId;
-
-    // Swap the `created` trait to the `created_at` that Customer.io needs
-    // and convert it from milliseconds to seconds.
-    if (traits.created) {
-      traits.created_at = Math.floor(traits.created/1000);
-      delete traits.created;
-    }
-
-    window._cio.identify(traits);
-  },
-
-  track : function (event, properties) {
-    window._cio.track(event, properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/errorception.js", function(exports, require, module){
-// http://errorception.com/
-
-var Provider = require('../provider')
-  , extend   = require('extend')
-  , load     = require('load-script')
-  , type     = require('type');
-
-
-module.exports = Provider.extend({
-
-  name : 'Errorception',
-
-  key : 'projectId',
-
-  defaults : {
-    projectId : null,
-    // Whether to store metadata about the user on `identify` calls, using
-    // the [Errorception `meta` API](http://blog.errorception.com/2012/11/capture-custom-data-with-your-errors.html).
-    meta : true
-  },
-
-  initialize : function (options, ready) {
-    window._errs = window._errs || [options.projectId];
-    load('//d15qhc0lu1ghnk.cloudfront.net/beacon.js');
-
-    // Attach the window `onerror` event.
-    var oldOnError = window.onerror;
-    window.onerror = function () {
-      window._errs.push(arguments);
-      // Chain the old onerror handler after we finish our work.
-      if ('function' === type(oldOnError)) {
-        oldOnError.apply(this, arguments);
-      }
-    };
-
-    // Errorception makes a queue, so it's ready immediately.
-    ready();
-  },
-
-  // Add the traits to the Errorception meta object.
-  identify : function (userId, traits) {
-    if (!this.options.meta) return;
-
-    // If the custom metadata object hasn't ever been made, make it.
-    window._errs.meta || (window._errs.meta = {});
-
-    // Add `userId` to traits.
-    traits.id = userId;
-
-    // Add all of the traits as metadata.
-    extend(window._errs.meta, traits);
-  }
-
-});
-});
-require.register("analytics/src/providers/foxmetrics.js", function(exports, require, module){
-// http://foxmetrics.com/documentation/apijavascript
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'FoxMetrics',
-
-  key : 'appId',
-
-  defaults : {
-    appId : null
-  },
-
-  initialize : function (options, ready) {
-    var _fxm = window._fxm || {};
-    window._fxm = _fxm.events || [];
-    load('//d35tca7vmefkrc.cloudfront.net/scripts/' + options.appId + '.js');
-
-    // FoxMetrics makes a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // A `userId` is required for profile updates.
-    if (!userId) return;
-
-    // FoxMetrics needs the first and last name seperately. Fallback to
-    // splitting the `name` trait if we don't have what we need.
-    var firstName = traits.firstName
-      , lastName  = traits.lastName;
-
-    if (!firstName && traits.name) firstName = traits.name.split(' ')[0];
-    if (!lastName && traits.name)  lastName  = traits.name.split(' ')[1];
-
-    window._fxm.push([
-      '_fxm.visitor.profile',
-      userId,         // user id
-      firstName,      // first name
-      lastName,       // last name
-      traits.email,   // email
-      traits.address, // address
-      undefined,      // social
-      undefined,      // partners
-      traits          // attributes
-    ]);
-  },
-
-  track : function (event, properties) {
-    window._fxm.push([
-      event,               // event name
-      properties.category, // category
-      properties           // properties
-    ]);
-  },
-
-  pageview : function (url) {
-    window._fxm.push([
-      '_fxm.pages.view',
-      undefined, // title
-      undefined, // name
-      undefined, // category
-      url,       // url
-      undefined  // referrer
-    ]);
-  }
-
-});
-});
-require.register("analytics/src/providers/gauges.js", function(exports, require, module){
-// http://get.gaug.es/documentation/tracking/
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Gauges',
-
-  key : 'siteId',
-
-  defaults : {
-    siteId : null
-  },
-
-  initialize : function (options, ready) {
-    window._gauges = window._gauges || [];
-    var script = load('//secure.gaug.es/track.js');
-    // Gauges needs a few attributes on its script element.
-    script.id = 'gauges-tracker';
-    script.setAttribute('data-site-id', options.siteId);
-
-    // Gauges make a queue so it's ready immediately.
-    ready();
-  },
-
-  pageview : function (url) {
-    window._gauges.push(['track']);
-  }
-
-});
-});
-require.register("analytics/src/providers/get-satisfaction.js", function(exports, require, module){
-// You have to be signed in to access the snippet code:
-// https://console.getsatisfaction.com/start/101022?signup=true#engage
-
-var Provider = require('../provider')
-  , load     = require('load-script')
-  , onBody   = require('on-body');
-
-
-module.exports = Provider.extend({
-
-  name : 'Get Satisfaction',
-
-  key : 'widgetId',
-
-  defaults : {
-    widgetId : null
-  },
-
-  initialize : function (options, ready) {
-    // Get Satisfaction requires a div that will become their widget tab. Append
-    // it once `document.body` exists.
-    var div = document.createElement('div');
-    var id = div.id = 'getsat-widget-' + options.widgetId;
-    onBody(function (body) {
-      body.appendChild(div);
-    });
-
-    // Usually they load their snippet synchronously, so we need to wait for it
-    // to come back before initializing the tab.
-    load('https://loader.engage.gsfn.us/loader.js', function () {
-      if (window.GSFN !== undefined) {
-        window.GSFN.loadWidget(options.widgetId, { containerId : id });
-      }
-      ready();
-    });
-
-  }
-
-});
-});
-require.register("analytics/src/providers/google-analytics.js", function(exports, require, module){
-// https://developers.google.com/analytics/devguides/collection/gajs/
-
-var Provider  = require('../provider')
-  , load      = require('load-script')
-  , type      = require('type')
-  , url       = require('url')
-  , canonical = require('canonical');
-
-
-module.exports = Provider.extend({
-
-  name : 'Google Analytics',
-
-  key : 'trackingId',
-
-  defaults : {
-    // Whether to anonymize the IP address collected for the user.
-    anonymizeIp : false,
-    // An optional domain setting, to restrict where events can originate from.
-    domain : null,
-    // Whether to enable GOogle's DoubleClick remarketing feature.
-    doubleClick : false,
-    // Whether to use Google Analytics's Enhanced Link Attribution feature:
-    // http://support.google.com/analytics/bin/answer.py?hl=en&answer=2558867
-    enhancedLinkAttribution : false,
-    // A domain to ignore for referrers. Maps to _addIgnoredRef
-    ignoreReferrer : null,
-    // Whether or not to track and initial pageview when initialized.
-    initialPageview : true,
-    // The setting to use for Google Analytics's Site Speed Sample Rate feature:
-    // https://developers.google.com/analytics/devguides/collection/gajs/methods/gaJSApiBasicConfiguration#_gat.GA_Tracker_._setSiteSpeedSampleRate
-    siteSpeedSampleRate : null,
-    // Your Google Analytics Tracking ID.
-    trackingId : null,
-    // Whether you're using the new Universal Analytics or not.
-    universalClient: false
-  },
-
-  initialize : function (options, ready) {
-    if (options.universalClient) this.initializeUniversal(options, ready);
-    else this.initializeClassic(options, ready);
-  },
-
-  initializeClassic: function (options, ready) {
-    window._gaq = window._gaq || [];
-    window._gaq.push(['_setAccount', options.trackingId]);
-
-    // Apply a bunch of optional settings.
-    if (options.domain) {
-      window._gaq.push(['_setDomainName', options.domain]);
-    }
-    if (options.enhancedLinkAttribution) {
-      var protocol = 'https:' === document.location.protocol ? 'https:' : 'http:';
-      var pluginUrl = protocol + '//www.google-analytics.com/plugins/ga/inpage_linkid.js';
-      window._gaq.push(['_require', 'inpage_linkid', pluginUrl]);
-    }
-    if (type(options.siteSpeedSampleRate) === 'number') {
-      window._gaq.push(['_setSiteSpeedSampleRate', options.siteSpeedSampleRate]);
-    }
-    if (options.anonymizeIp) {
-      window._gaq.push(['_gat._anonymizeIp']);
-    }
-    if (options.ignoreReferrer) {
-      window._gaq.push(['_addIgnoredRef', options.ignoreReferrer]);
-    }
-    if (options.initialPageview) {
-      var path, canon = canonical();
-      if (canon) path = url.parse(canon).pathname;
-      this.pageview(path);
-    }
-
-    // URLs change if DoubleClick is on. Even though Google Analytics makes a
-    // queue, the `_gat` object isn't available until the library loads.
-    if (options.doubleClick) {
-      load('//stats.g.doubleclick.net/dc.js', ready);
-    } else {
-      load({
-        http  : 'http://www.google-analytics.com/ga.js',
-        https : 'https://ssl.google-analytics.com/ga.js'
-      }, ready);
-    }
-  },
-
-  initializeUniversal: function (options, ready) {
-
-    // GA-universal lets you set your own queue name
-    var global = this.global = 'ga';
-
-    // and needs to know about this queue name in this special object
-    // so that future plugins can also operate on the object
-    window['GoogleAnalyticsObject'] = global;
-
-    // setup the global variable
-    window[global] = window[global] || function () {
-      (window[global].q = window[global].q || []).push(arguments);
-    };
-
-    // GA also needs to know the current time (all from their snippet)
-    window[global].l = 1 * new Date();
-
-    var createOpts = {};
-
-    // Apply a bunch of optional settings.
-    if (options.domain)
-      createOpts.cookieDomain = options.domain || 'none';
-    if (type(options.siteSpeedSampleRate) === 'number')
-      createOpts.siteSpeedSampleRate = options.siteSpeedSampleRate;
-    if (options.anonymizeIp)
-      ga('set', 'anonymizeIp', true);
-
-    ga('create', options.trackingId, createOpts);
-
-    if (options.initialPageview) {
-      var path, canon = canonical();
-      if (canon) path = url.parse(canon).pathname;
-      this.pageview(path);
-    }
-
-    load('//www.google-analytics.com/analytics.js');
-
-    // Google makes a queue so it's ready immediately.
-    ready();
-  },
-
-  track : function (event, properties) {
-    properties || (properties = {});
-
-    var value;
-
-    // Since value is a common property name, ensure it is a number and Google
-    // requires that it be an integer.
-    if (type(properties.value) === 'number') value = Math.round(properties.value);
-
-    // Try to check for a `category` and `label`. A `category` is required,
-    // so if it's not there we use `'All'` as a default. We can safely push
-    // undefined if the special properties don't exist. Try using revenue
-    // first, but fall back to a generic `value` as well.
-    if (this.options.universalClient) {
-      var opts = {};
-      if (properties.noninteraction) opts.nonInteraction = properties.noninteraction;
-      window[this.global](
-        'send',
-        'event',
-        properties.category || 'All',
-        event,
-        properties.label,
-        Math.round(properties.revenue) || value,
-        opts
-      );
-    } else {
-      window._gaq.push([
-        '_trackEvent',
-        properties.category || 'All',
-        event,
-        properties.label,
-        Math.round(properties.revenue) || value,
-        properties.noninteraction
-      ]);
-    }
-  },
-
-  pageview : function (url) {
-    if (this.options.universalClient) {
-      window[this.global]('send', 'pageview', url);
-    } else {
-      window._gaq.push(['_trackPageview', url]);
-    }
-  }
-
-});
-});
-require.register("analytics/src/providers/gosquared.js", function(exports, require, module){
-// http://www.gosquared.com/support
-// https://www.gosquared.com/customer/portal/articles/612063-tracker-functions
-
-var Provider = require('../provider')
-  , user     = require('../user')
-  , load     = require('load-script')
-  , onBody   = require('on-body');
-
-
-module.exports = Provider.extend({
-
-  name : 'GoSquared',
-
-  key : 'siteToken',
-
-  defaults : {
-    siteToken : null
-  },
-
-  initialize : function (options, ready) {
-    // GoSquared assumes a body in their script, so we need this wrapper.
-    onBody(function () {
-      var GoSquared = window.GoSquared = {};
-      GoSquared.acct = options.siteToken;
-      GoSquared.q = [];
-      window._gstc_lt =+ (new Date());
-
-      GoSquared.VisitorName = user.id();
-      GoSquared.Visitor = user.traits();
-
-      load('//d1l6p2sc9645hc.cloudfront.net/tracker.js');
-
-      // GoSquared makes a queue, so it's ready immediately.
-      ready();
-    });
-  },
-
-  identify : function (userId, traits) {
-    // TODO figure out if this will actually work. Seems like GoSquared will
-    // never know these values are updated.
-    if (userId) window.GoSquared.UserName = userId;
-    if (traits) window.GoSquared.Visitor = traits;
-  },
-
-  track : function (event, properties) {
-    // GoSquared sets a `gs_evt_name` property with a value of the event
-    // name, so it relies on properties being an object.
-    window.GoSquared.q.push(['TrackEvent', event, properties || {}]);
-  },
-
-  pageview : function (url) {
-    window.GoSquared.q.push(['TrackView', url]);
-  }
-
-});
-});
-require.register("analytics/src/providers/heap.js", function(exports, require, module){
-// https://heapanalytics.com/docs
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-module.exports = Provider.extend({
-
-  name : 'Heap',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null
-  },
-
-  initialize : function (options, ready) {
-    window.heap=window.heap||[];window.heap.load=function(a){window._heapid=a;var b=document.createElement("script");b.type="text/javascript",b.async=!0,b.src=("https:"===document.location.protocol?"https:":"http:")+"//d36lvucg9kzous.cloudfront.net";var c=document.getElementsByTagName("script")[0];c.parentNode.insertBefore(b,c);var d=function(a){return function(){heap.push([a].concat(Array.prototype.slice.call(arguments,0)))}},e=["identify","track"];for(var f=0;f<e.length;f++)heap[e[f]]=d(e[f])};
-    window.heap.load(options.apiKey);
-
-    // heap creates its own queue, so we're ready right away
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    window.heap.identify(traits);
-  },
-
-  track : function (event, properties) {
-    window.heap.track(event, properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/hittail.js", function(exports, require, module){
-// http://www.hittail.com
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'HitTail',
-
-  key : 'siteId',
-
-  defaults : {
-    siteId : null
-  },
-
-  initialize : function (options, ready) {
-    load('//' + options.siteId + '.hittail.com/mlt.js', ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/hubspot.js", function(exports, require, module){
-// http://hubspot.clarify-it.com/d/4m62hl
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'HubSpot',
-
-  key : 'portalId',
-
-  defaults : {
-    portalId : null
-  },
-
-  initialize : function (options, ready) {
-    // HubSpot checks in their snippet to make sure another script with
-    // `hs-analytics` isn't already in the DOM. Seems excessive, but who knows
-    // if there's weird deprecation going on :p
-    if (!document.getElementById('hs-analytics')) {
-      window._hsq = window._hsq || [];
-      var script = load('https://js.hubspot.com/analytics/' + (Math.ceil(new Date()/300000)*300000) + '/' + options.portalId + '.js');
-      script.id = 'hs-analytics';
-    }
-
-    // HubSpot makes a queue, so it's ready immediately.
-    ready();
-  },
-
-  // HubSpot does not use a userId, but the email address is required on
-  // the traits object.
-  identify : function (userId, traits) {
-    window._hsq.push(["identify", traits]);
-  },
-
-  // Event Tracking is available to HubSpot Enterprise customers only. In
-  // addition to adding any unique event name, you can also use the id of an
-  // existing custom event as the event variable.
-  track : function (event, properties) {
-    window._hsq.push(["trackEvent", event, properties]);
-  },
-
-  // HubSpot doesn't support passing in a custom URL.
-  pageview : function (url) {
-    window._hsq.push(['_trackPageview']);
-  }
-
-});
-});
-require.register("analytics/src/providers/index.js", function(exports, require, module){
-module.exports = [
-  require('./adroll'),
-  require('./amplitude'),
-  require('./bitdeli'),
-  require('./bugherd'),
-  require('./chartbeat'),
-  require('./clicktale'),
-  require('./clicky'),
-  require('./comscore'),
-  require('./crazyegg'),
-  require('./customerio'),
-  require('./errorception'),
-  require('./foxmetrics'),
-  require('./gauges'),
-  require('./get-satisfaction'),
-  require('./google-analytics'),
-  require('./gosquared'),
-  require('./heap'),
-  require('./hittail'),
-  require('./hubspot'),
-  require('./improvely'),
-  require('./intercom'),
-  require('./keen-io'),
-  require('./kissmetrics'),
-  require('./klaviyo'),
-  require('./livechat'),
-  require('./lytics'),
-  require('./mixpanel'),
-  require('./olark'),
-  require('./optimizely'),
-  require('./perfect-audience'),
-  require('./pingdom'),
-  require('./preact'),
-  require('./qualaroo'),
-  require('./quantcast'),
-  require('./sentry'),
-  require('./snapengage'),
-  require('./usercycle'),
-  require('./userfox'),
-  require('./uservoice'),
-  require('./vero'),
-  require('./visual-website-optimizer'),
-  require('./woopra')
-];
-
-});
-require.register("analytics/src/providers/improvely.js", function(exports, require, module){
-// http://www.improvely.com/docs/landing-page-code
-// http://www.improvely.com/docs/conversion-code
-// http://www.improvely.com/docs/labeling-visitors
-
-var Provider = require('../provider')
-  , alias    = require('alias')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Improvely',
-
-  defaults : {
-    // Improvely requires two options: `domain` and `projectId`.
-    domain : null,
-    projectId : null
-  },
-
-  initialize : function (options, ready) {
-    window._improvely = window._improvely || [];
-    window.improvely = window.improvely || {
-      init  : function (e, t) { window._improvely.push(["init", e, t]); },
-      goal  : function (e) { window._improvely.push(["goal", e]); },
-      label : function (e) { window._improvely.push(["label", e]); }
-    };
-
-    load('//' + options.domain + '.iljmp.com/improvely.js');
-    window.improvely.init(options.domain, options.projectId);
-
-    // Improvely creates a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    if (userId) window.improvely.label(userId);
-  },
-
-  track : function (event, properties) {
-    // Improvely calls `revenue` `amount`, and puts the `event` in properties as
-    // the `type`.
-    properties || (properties = {});
-    properties.type = event;
-    alias(properties, { 'revenue' : 'amount' });
-    window.improvely.goal(properties);
-  }
-
-});
-
-});
-require.register("analytics/src/providers/intercom.js", function(exports, require, module){
-// http://docs.intercom.io/
-// http://docs.intercom.io/#IntercomJS
-
-var Provider = require('../provider')
-  , extend   = require('extend')
-  , load     = require('load-script')
-  , isEmail  = require('is-email');
-
-
-module.exports = Provider.extend({
-
-  name : 'Intercom',
-
-  // Whether Intercom has already been booted or not. Intercom becomes booted
-  // after Intercom('boot', ...) has been called on the first identify.
-  booted : false,
-
-  key : 'appId',
-
-  defaults : {
-    // Intercom's required key.
-    appId : null,
-    // An optional setting to display the Intercom inbox widget.
-    activator : null,
-    // Whether to show the count of messages for the inbox widget.
-    counter : true
-  },
-
-  initialize : function (options, ready) {
-    load('https://static.intercomcdn.com/intercom.v1.js', ready);
-  },
-
-  identify : function (userId, traits, options) {
-    // Don't do anything if we just have traits the first time.
-    if (!this.booted && !userId) return;
-
-    // Intercom specific settings. BACKWARDS COMPATIBILITY: we need to check for
-    // the lowercase variant as well.
-    options || (options = {});
-    var Intercom = options.Intercom || options.intercom || {};
-    traits.increments = Intercom.increments;
-    traits.user_hash = Intercom.userHash || Intercom.user_hash;
-
-    // They need `created_at` as a Unix timestamp (seconds).
-    if (traits.created) {
-      traits.created_at = Math.floor(traits.created/1000);
-      delete traits.created;
-    }
-
-    // Convert a `company`'s `created` date.
-    if (traits.company && traits.company.created) {
-      traits.company.created_at = Math.floor(traits.company.created/1000);
-      delete traits.company.created;
-    }
-
-    // Optionally add the inbox widget.
-    if (this.options.activator) {
-      traits.widget = {
-        activator   : this.options.activator,
-        use_counter : this.options.counter
-      };
-    }
-
-    // If this is the first time we've identified, `boot` instead of `update`
-    // and add our one-time boot settings.
-    if (this.booted) {
-      window.Intercom('update', traits);
-    } else {
-      extend(traits, {
-        app_id  : this.options.appId,
-        user_id : userId
-      });
-      window.Intercom('boot', traits);
-    }
-
-    // Set the booted state, so that we know to call 'update' next time.
-    this.booted = true;
-  },
-
-  // Intercom doesn't have a separate `group` method, but they take a
-  // `companies` trait for the user.
-  group : function (groupId, properties, options) {
-    properties.id = groupId;
-    window.Intercom('update', { company : properties });
-  }
-
-});
-
-});
-require.register("analytics/src/providers/keen-io.js", function(exports, require, module){
-// https://keen.io/docs/
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Keen IO',
-
-  defaults : {
-    // The Project ID is **required**.
-    projectId : null,
-    // The Write Key is **required** to send events.
-    writeKey : null,
-    // The Read Key is optional, only if you want to "do analysis".
-    readKey : null,
-    // Whether or not to pass pageviews on to Keen IO.
-    pageview : true,
-    // Whether or not to track an initial pageview on `initialize`.
-    initialPageview : true
-  },
-
-  initialize : function (options, ready) {
-    window.Keen = window.Keen||{configure:function(e){this._cf=e},addEvent:function(e,t,n,i){this._eq=this._eq||[],this._eq.push([e,t,n,i])},setGlobalProperties:function(e){this._gp=e},onChartsReady:function(e){this._ocrq=this._ocrq||[],this._ocrq.push(e)}};
-    window.Keen.configure({
-      projectId : options.projectId,
-      writeKey  : options.writeKey,
-      readKey   : options.readKey
-    });
-
-    load('//dc8na2hxrj29i.cloudfront.net/code/keen-2.1.0-min.js');
-
-    if (options.initialPageview) this.pageview();
-
-    // Keen IO defines all their functions in the snippet, so they're ready.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // Use Keen IO global properties to include `userId` and `traits` on
-    // every event sent to Keen IO.
-    var globalUserProps = {};
-    if (userId) globalUserProps.userId = userId;
-    if (traits) globalUserProps.traits = traits;
-    if (userId || traits) {
-      window.Keen.setGlobalProperties(function(eventCollection) {
-        return { user: globalUserProps };
-      });
-    }
-  },
-
-  track : function (event, properties) {
-    window.Keen.addEvent(event, properties);
-  },
-
-  pageview : function (url) {
-    if (!this.options.pageview) return;
-
-    var properties = {
-      url  : url || document.location.href,
-      name : document.title
-    };
-
-    this.track('Loaded a Page', properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/kissmetrics.js", function(exports, require, module){
-// http://support.kissmetrics.com/apis/javascript
-
-var Provider = require('../provider')
-  , alias    = require('alias')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'KISSmetrics',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null
-  },
-
-  initialize : function (options, ready) {
-    window._kmq = window._kmq || [];
-    load('//i.kissmetrics.com/i.js');
-    load('//doug1izaerwt3.cloudfront.net/' + options.apiKey + '.1.js');
-
-    // KISSmetrics creates a queue, so it's ready immediately.
-    ready();
-  },
-
-  // KISSmetrics uses two separate methods: `identify` for storing the
-  // `userId`, and `set` for storing `traits`.
-  identify : function (userId, traits) {
-    if (userId) window._kmq.push(['identify', userId]);
-    if (traits) window._kmq.push(['set', traits]);
-  },
-
-  track : function (event, properties) {
-    // KISSmetrics handles revenue with the `'Billing Amount'` property by
-    // default, although it's changeable in the interface.
-    if (properties) {
-      alias(properties, {
-        'revenue' : 'Billing Amount'
-      });
-    }
-
-    window._kmq.push(['record', event, properties]);
-  },
-
-  // Although undocumented, KISSmetrics actually supports not passing a second
-  // ID, in which case it uses the currenty identified user's ID.
-  alias : function (newId, originalId) {
-    window._kmq.push(['alias', newId, originalId]);
-  }
-
-});
-});
-require.register("analytics/src/providers/klaviyo.js", function(exports, require, module){
-// https://www.klaviyo.com/docs
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Klaviyo',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null
-  },
-
-  initialize : function (options, ready) {
-    window._learnq = window._learnq || [];
-    window._learnq.push(['account', options.apiKey]);
-    load('//a.klaviyo.com/media/js/learnmarklet.js');
-
-    // Klaviyo creats a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // Klaviyo requires a `userId` and takes the it on the traits object itself.
-    if (!userId) return;
-    traits.$id = userId;
-    window._learnq.push(['identify', traits]);
-  },
-
-  track : function (event, properties) {
-    window._learnq.push(['track', event, properties]);
-  }
-
-});
-});
-require.register("analytics/src/providers/livechat.js", function(exports, require, module){
-// http://www.livechatinc.com/api/javascript-api
-
-var Provider = require('../provider')
-  , each     = require('each')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'LiveChat',
-
-  key : 'license',
-
-  defaults : {
-    license : null
-  },
-
-  initialize : function (options, ready) {
-    window.__lc = { license : options.license };
-    load('//cdn.livechatinc.com/tracking.js', ready);
-  },
-
-  // LiveChat isn't an analytics service, but we can use the `userId` and
-  // `traits` to tag the user with their real name in the chat console.
-  identify : function (userId, traits) {
-    // In case the LiveChat library hasn't loaded yet.
-    if (!window.LC_API) return;
-
-    // LiveChat takes them in an array format.
-    var variables = [];
-
-    if (userId) variables.push({ name: 'User ID', value: userId });
-    if (traits) {
-      each(traits, function (key, value) {
-        variables.push({
-          name  : key,
-          value : value
-        });
-      });
-    }
-
-    window.LC_API.set_custom_variables(variables);
-  }
-
-});
-});
-require.register("analytics/src/providers/lytics.js", function(exports, require, module){
-// Lytics
-// --------
-// [Documentation](http://developer.lytics.io/doc#jstag),
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Lytics',
-
-  key : 'cid',
-
-  defaults : {
-    cid: null
-  },
-
-  initialize : function (options, ready) {
-    window.jstag = (function () {
-      var t={_q:[],_c:{cid:options.cid,url:'//c.lytics.io'},ts:(new Date()).getTime()};
-      t.send=function(){
-      this._q.push(["ready","send",Array.prototype.slice.call(arguments)]);
-      return this;
-      };
-      return t;
-    })();
-
-    load('//c.lytics.io/static/io.min.js');
-
-    ready();
-  },
-
-  identify: function (userId, traits) {
-    traits._uid = userId;
-    window.jstag.send(traits);
-  },
-
-  track: function (event, properties) {
-    properties._e = event;
-    window.jstag.send(properties);
-  },
-
-  pageview: function (url) {
-    window.jstag.send();
-  }
-
-});
-});
-require.register("analytics/src/providers/mixpanel.js", function(exports, require, module){
-// https://mixpanel.com/docs/integration-libraries/javascript
-// https://mixpanel.com/docs/people-analytics/javascript
-// https://mixpanel.com/docs/integration-libraries/javascript-full-api
-
-var Provider = require('../provider')
-  , alias    = require('alias')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Mixpanel',
-
-  key : 'token',
-
-  defaults : {
-    // Whether to call `mixpanel.nameTag` on `identify`.
-    nameTag : true,
-    // Whether to use Mixpanel's People API.
-    people : false,
-    // The Mixpanel API token for your account.
-    token : null,
-    // Whether to track pageviews to Mixpanel.
-    pageview : false,
-    // Whether to track an initial pageview on initialize.
-    initialPageview : false,
-    // A custom cookie name to use
-    cookieName : null
-  },
-
-  initialize : function (options, ready) {
-    (function (c, a) {
-        window.mixpanel = a;
-        var b, d, h, e;
-        a._i = [];
-        a.init = function (b, c, f) {
-          function d(a, b) {
-            var c = b.split('.');
-            2 == c.length && (a = a[c[0]], b = c[1]);
-            a[b] = function () {
-                a.push([b].concat(Array.prototype.slice.call(arguments, 0)));
-            };
-          }
-          var g = a;
-          'undefined' !== typeof f ? g = a[f] = [] : f = 'mixpanel';
-          g.people = g.people || [];
-          h = ['disable', 'track', 'track_pageview', 'track_links', 'track_forms', 'register', 'register_once', 'unregister', 'identify', 'alias', 'name_tag', 'set_config', 'people.set', 'people.increment', 'people.track_charge', 'people.append'];
-          for (e = 0; e < h.length; e++) d(g, h[e]);
-          a._i.push([b, c, f]);
-        };
-        a.__SV = 1.2;
-        // Modification to the snippet: call ready whenever the library has
-        // fully loaded.
-        load('//cdn.mxpnl.com/libs/mixpanel-2.2.min.js', ready);
-    })(document, window.mixpanel || []);
-
-    // Mixpanel only accepts snake_case options
-    options.cookie_name = options.cookieName;
-
-    // Pass options directly to `init` as the second argument.
-    window.mixpanel.init(options.token, options);
-
-    if (options.initialPageview) this.pageview();
-  },
-
-  identify : function (userId, traits) {
-    // Alias the traits' keys with dollar signs for Mixpanel's API.
-    alias(traits, {
-      'created'   : '$created',
-      'email'     : '$email',
-      'firstName' : '$first_name',
-      'lastName'  : '$last_name',
-      'lastSeen'  : '$last_seen',
-      'name'      : '$name',
-      'username'  : '$username',
-      'phone'     : '$phone'
-    });
-
-    // Finally, call all of the identify equivalents. Verify certain calls
-    // against options to make sure they're enabled.
-    if (userId) {
-      window.mixpanel.identify(userId);
-      if (this.options.nameTag) window.mixpanel.name_tag(traits && traits.$email || userId);
-    }
-    if (traits) {
-      window.mixpanel.register(traits);
-      if (this.options.people) window.mixpanel.people.set(traits);
-    }
-  },
-
-  track : function (event, properties) {
-    window.mixpanel.track(event, properties);
-
-    // Mixpanel handles revenue with a `transaction` call in their People
-    // feature. So if we're using people, record a transcation.
-    if (properties && properties.revenue && this.options.people) {
-      window.mixpanel.people.track_charge(properties.revenue);
-    }
-  },
-
-  // Mixpanel doesn't actually track the pageviews, but they do show up in the
-  // Mixpanel stream.
-  pageview : function (url) {
-    window.mixpanel.track_pageview(url);
-
-    // If they don't want pageviews tracked, leave now.
-    if (!this.options.pageview) return;
-
-    var properties = {
-      url  : url || document.location.href,
-      name : document.title
-    };
-
-    this.track('Loaded a Page', properties);
-  },
-
-  // Although undocumented, Mixpanel actually supports the `originalId`. It
-  // just usually defaults to the current user's `distinct_id`.
-  alias : function (newId, originalId) {
-
-    if(window.mixpanel.get_distinct_id &&
-       window.mixpanel.get_distinct_id() === newId) return;
-
-    // HACK: internal mixpanel API to ensure we don't overwrite.
-    if(window.mixpanel.get_property &&
-       window.mixpanel.get_property('$people_distinct_id') === newId) return;
-
-    window.mixpanel.alias(newId, originalId);
-  }
-
-});
-});
-require.register("analytics/src/providers/olark.js", function(exports, require, module){
-// http://www.olark.com/documentation
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email');
-
-
-module.exports = Provider.extend({
-
-  name : 'Olark',
-
-  key : 'siteId',
-
-  chatting : false,
-
-  defaults : {
-    siteId : null,
-    // Whether to use the user's name or email in the Olark chat console.
-    identify : true,
-    // Whether to log pageviews to the Olark chat console.
-    track : false,
-    // Whether to log pageviews to the Olark chat console.
-    pageview : true
-  },
-
-  initialize : function (options, ready) {
-    window.olark||(function(c){var f=window,d=document,l=f.location.protocol=="https:"?"https:":"http:",z=c.name,r="load";var nt=function(){f[z]=function(){(a.s=a.s||[]).push(arguments)};var a=f[z]._={},q=c.methods.length;while(q--){(function(n){f[z][n]=function(){f[z]("call",n,arguments)}})(c.methods[q])}a.l=c.loader;a.i=nt;a.p={0:+new Date};a.P=function(u){a.p[u]=new Date-a.p[0]};function s(){a.P(r);f[z](r)}f.addEventListener?f.addEventListener(r,s,false):f.attachEvent("on"+r,s);var ld=function(){function p(hd){hd="head";return["<",hd,"></",hd,"><",i,' onl' + 'oad="var d=',g,";d.getElementsByTagName('head')[0].",j,"(d.",h,"('script')).",k,"='",l,"//",a.l,"'",'"',"></",i,">"].join("")}var i="body",m=d[i];if(!m){return setTimeout(ld,100)}a.P(1);var j="appendChild",h="createElement",k="src",n=d[h]("div"),v=n[j](d[h](z)),b=d[h]("iframe"),g="document",e="domain",o;n.style.display="none";m.insertBefore(n,m.firstChild).id=z;b.frameBorder="0";b.id=z+"-loader";if(/MSIE[ ]+6/.test(navigator.userAgent)){b.src="javascript:false"}b.allowTransparency="true";v[j](b);try{b.contentWindow[g].open()}catch(w){c[e]=d[e];o="javascript:var d="+g+".open();d.domain='"+d.domain+"';";b[k]=o+"void(0);"}try{var t=b.contentWindow[g];t.write(p());t.close()}catch(x){b[k]=o+'d.write("'+p().replace(/"/g,String.fromCharCode(92)+'"')+'");d.close();'}a.P(2)};ld()};nt()})({loader: "static.olark.com/jsclient/loader0.js",name:"olark",methods:["configure","extend","declare","identify"]});
-    window.olark.identify(options.siteId);
-
-    // Set up event handlers for chat box open and close so that
-    // we know whether a conversation is active. If it is active,
-    // then we'll send track and pageview information.
-    var self = this;
-    window.olark('api.box.onExpand', function () { self.chatting = true; });
-    window.olark('api.box.onShrink', function () { self.chatting = false; });
-
-    // Olark creates it's method in the snippet, so it's ready immediately.
-    ready();
-  },
-
-  // Update traits about the user in Olark to make the operator's life easier.
-  identify : function (userId, traits) {
-    if (!this.options.identify) return;
-
-    var email    = traits.email
-      , name     = traits.name || traits.firstName
-      , phone    = traits.phone
-      , nickname = name || email || userId;
-
-    // If we have a name and an email, add the email too to be more helpful.
-    if (name && email) nickname += ' ('+email+')';
-
-    // Call all of Olark's settings APIs.
-    window.olark('api.visitor.updateCustomFields', traits);
-    if (email)    window.olark('api.visitor.updateEmailAddress', { emailAddress : email });
-    if (name)     window.olark('api.visitor.updateFullName', { fullName : name });
-    if (phone)    window.olark('api.visitor.updatePhoneNumber', { phoneNumber : phone });
-    if (nickname) window.olark('api.chat.updateVisitorNickname', { snippet : nickname });
-  },
-
-  // Log events the user triggers to the chat console, if you so desire it.
-  track : function (event, properties) {
-    if (!this.options.track || !this.chatting) return;
-
-    // To stay consistent with olark's default messages, it's all lowercase.
-    window.olark('api.chat.sendNotificationToOperator', {
-      body : 'visitor triggered "'+event+'"'
-    });
-  },
-
-  // Mimic the functionality Olark has for normal pageviews with pseudo-
-  // pageviews, telling the operator when a visitor changes pages.
-  pageview : function (url) {
-    if (!this.options.pageview || !this.chatting) return;
-
-    // To stay consistent with olark's default messages, it's all lowercase.
-    window.olark('api.chat.sendNotificationToOperator', {
-      body : 'looking at ' + window.location.href
-    });
-  }
-
-});
-});
-require.register("analytics/src/providers/optimizely.js", function(exports, require, module){
-// https://www.optimizely.com/docs/api
-
-var each      = require('each')
-  , nextTick  = require('next-tick')
-  , Provider  = require('../provider');
-
-
-module.exports = Provider.extend({
-
-  name : 'Optimizely',
-
-  defaults : {
-    // Whether to replay variations into other enabled integrations as traits.
-    variations : true
-  },
-
-  initialize : function (options, ready, analytics) {
-    // Create the `optimizely` object in case it doesn't exist already.
-    // https://www.optimizely.com/docs/api#function-calls
-    window.optimizely = window.optimizely || [];
-
-    // If the `variations` option is true, replay our variations on the next
-    // tick to wait for the entire library to be ready for replays.
-    if (options.variations) {
-      var self = this;
-      nextTick(function () { self.replay(); });
-    }
-
-    // Optimizely should be on the page already, so it's always ready.
-    ready();
-  },
-
-  track : function (event, properties) {
-    // Optimizely takes revenue as cents, not dollars.
-    if (properties && properties.revenue) properties.revenue = properties.revenue * 100;
-
-    window.optimizely.push(['trackEvent', event, properties]);
-  },
-
-  replay : function () {
-    // Make sure we have access to Optimizely's `data` dictionary.
-    var data = window.optimizely.data;
-    if (!data) return;
-
-    // Grab a few pieces of data we'll need for replaying.
-    var experiments       = data.experiments
-      , variationNamesMap = data.state.variationNamesMap;
-
-    // Create our traits object to add variations to.
-    var traits = {};
-
-    // Loop through all the experiement the user has been assigned a variation
-    // for and add them to our traits.
-    each(variationNamesMap, function (experimentId, variation) {
-      traits['Experiment: ' + experiments[experimentId].name] = variation;
-    });
-
-    this.analytics.identify(traits);
-  }
-
-});
-});
-require.register("analytics/src/providers/perfect-audience.js", function(exports, require, module){
-// https://www.perfectaudience.com/docs#javascript_api_autoopen
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Perfect Audience',
-
-  key : 'siteId',
-
-  defaults : {
-    siteId : null
-  },
-
-  initialize : function (options, ready) {
-    window._pa || (window._pa = {});
-    load('//tag.perfectaudience.com/serve/' + options.siteId + '.js', ready);
-  },
-
-  track : function (event, properties) {
-    window._pa.track(event, properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/pingdom.js", function(exports, require, module){
-var date     = require('load-date')
-  , Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Pingdom',
-
-  key : 'id',
-
-  defaults : {
-    id : null
-  },
-
-  initialize : function (options, ready) {
-
-    window._prum = [
-      ['id', options.id],
-      ['mark', 'firstbyte', date.getTime()]
-    ];
-
-    // We've replaced the original snippet loader with our own load method.
-    load('//rum-static.pingdom.net/prum.min.js', ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/preact.js", function(exports, require, module){
-// http://www.preact.io/api/javascript
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-module.exports = Provider.extend({
-
-  name : 'Preact',
-
-  key : 'projectCode',
-
-  defaults : {
-    projectCode    : null
-  },
-
-  initialize : function (options, ready) {
-    var _lnq = window._lnq = window._lnq || [];
-    _lnq.push(["_setCode", options.projectCode]);
-
-    load('//d2bbvl6dq48fa6.cloudfront.net/js/ln-2.4.min.js');
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // Don't do anything if we just have traits. Preact requires a `userId`.
-    if (!userId) return;
-
-    // Swap the `created` trait to the `created_at` that Preact needs
-    // and convert it from milliseconds to seconds.
-    if (traits.created) {
-      traits.created_at = Math.floor(traits.created/1000);
-      delete traits.created;
-    }
-
-    window._lnq.push(['_setPersonData', {
-      name       : traits.name,
-      email      : traits.email,
-      uid        : userId,
-      properties : traits
-    }]);
-  },
-
-  group : function (groupId, properties) {
-    if (!groupId) return;
-    properties.id = groupId;
-    window._lnq.push(['_setAccount', properties]);
-  },
-
-  track : function (event, properties) {
-    properties || (properties = {});
-
-    // Preact takes a few special properties, and the rest in `extras`. So first
-    // convert and remove the special ones from `properties`.
-    var special = { name : event };
-
-    // They take `revenue` in cents.
-    if (properties.revenue) {
-      special.revenue = properties.revenue * 100;
-      delete properties.revenue;
-    }
-
-    if (properties.note) {
-      special.note = properties.note;
-      delete properties.note;
-    }
-
-    window._lnq.push(['_logEvent', special, properties]);
-  }
-
-});
-});
-require.register("analytics/src/providers/qualaroo.js", function(exports, require, module){
-// http://help.qualaroo.com/customer/portal/articles/731085-identify-survey-nudge-takers
-// http://help.qualaroo.com/customer/portal/articles/731091-set-additional-user-properties
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Qualaroo',
-
-  defaults : {
-    // Qualaroo has two required options.
-    customerId : null,
-    siteToken : null,
-    // Whether to record traits when a user triggers an event. This can be
-    // useful for sending targetted questionnaries.
-    track : false
-  },
-
-  // Qualaroo's script has two options in its URL.
-  initialize : function (options, ready) {
-    window._kiq = window._kiq || [];
-    load('//s3.amazonaws.com/ki.js/' + options.customerId + '/' + options.siteToken + '.js');
-
-    // Qualaroo creates a queue, so it's ready immediately.
-    ready();
-  },
-
-  // Qualaroo uses two separate methods: `identify` for storing the `userId`,
-  // and `set` for storing `traits`.
-  identify : function (userId, traits) {
-    var identity = traits.email || userId;
-    if (identity) window._kiq.push(['identify', identity]);
-    if (traits) window._kiq.push(['set', traits]);
-  },
-
-  // Qualaroo doesn't have `track` method yet, but to allow the users to do
-  // targetted questionnaires we can set name-value pairs on the user properties
-  // that apply to the current visit.
-  track : function (event, properties) {
-    if (!this.options.track) return;
-
-    // Create a name-value pair that will be pretty unique. For an event like
-    // 'Loaded a Page' this will make it 'Triggered: Loaded a Page'.
-    var traits = {};
-    traits['Triggered: ' + event] = true;
-
-    // Fire a normal identify, with traits only.
-    this.identify(null, traits);
-  }
-
-});
-});
-require.register("analytics/src/providers/quantcast.js", function(exports, require, module){
-// https://www.quantcast.com/learning-center/guides/using-the-quantcast-asynchronous-tag/
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Quantcast',
-
-  key : 'pCode',
-
-  defaults : {
-    pCode : null
-  },
-
-  initialize : function (options, ready) {
-    window._qevents = window._qevents || [];
-    window._qevents.push({ qacct: options.pCode });
-    load({
-      http  : 'http://edge.quantserve.com/quant.js',
-      https : 'https://secure.quantserve.com/quant.js'
-    }, ready);
-  }
-
-});
-});
-require.register("analytics/src/providers/sentry.js", function(exports, require, module){
-// http://raven-js.readthedocs.org/en/latest/config/index.html
-
-var Provider = require('../provider')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Sentry',
-
-  key : 'config',
-
-  defaults : {
-    config : null
-  },
-
-  initialize : function (options, ready) {
-    load('//d3nslu0hdya83q.cloudfront.net/dist/1.0/raven.min.js', function () {
-      // For now, Raven basically requires `install` to be called.
-      // https://github.com/getsentry/raven-js/blob/master/src/raven.js#L87
-      window.Raven.config(options.config).install();
-      ready();
-    });
-  },
-
-  identify : function (userId, traits) {
-    traits.id = userId;
-    window.Raven.setUser(traits);
-  },
-
-  // Raven will automatically use `captureMessage` if the error is a string.
-  log : function (error, properties) {
-    window.Raven.captureException(error, properties);
-  }
-
-});
-});
-require.register("analytics/src/providers/snapengage.js", function(exports, require, module){
-// http://help.snapengage.com/installation-guide-getting-started-in-a-snap/
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'SnapEngage',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null
-  },
-
-  initialize : function (options, ready) {
-    load('//commondatastorage.googleapis.com/code.snapengage.com/js/' + options.apiKey + '.js', ready);
-  },
-
-  // Set the email in the chat window if we have it.
-  identify : function (userId, traits, options) {
-    if (!traits.email) return;
-    window.SnapABug.setUserEmail(traits.email);
-  }
-
-});
-});
-require.register("analytics/src/providers/usercycle.js", function(exports, require, module){
-// http://docs.usercycle.com/javascript_api
-
-var Provider = require('../provider')
-  , load     = require('load-script')
-  , user     = require('../user');
-
-
-module.exports = Provider.extend({
-
-  name : 'USERcycle',
-
-  key : 'key',
-
-  defaults : {
-    key : null
-  },
-
-  initialize : function (options, ready) {
-    window._uc = window._uc || [];
-    window._uc.push(['_key', options.key]);
-    load('//api.usercycle.com/javascripts/track.js');
-
-    // USERcycle makes a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    if (userId) window._uc.push(['uid', userId]);
-
-    // USERcycle has a special "hidden" event that is used just for retention measurement.
-    // Lukas suggested on 6/4/2013 that we send traits on that event, since they use the
-    // the latest value of every event property as a "trait"
-    window._uc.push(['action', 'came_back', traits]);
-  },
-
-  track : function (event, properties) {
-    window._uc.push(['action', event, properties]);
-  }
-
-});
-});
-require.register("analytics/src/providers/userfox.js", function(exports, require, module){
-// https://www.userfox.com/docs/
-
-var Provider = require('../provider')
-  , extend   = require('extend')
-  , load     = require('load-script')
-  , isEmail  = require('is-email');
-
-
-module.exports = Provider.extend({
-
-  name : 'userfox',
-
-  key : 'clientId',
-
-  defaults : {
-    // userfox's required key.
-    clientId : null
-  },
-
-  initialize : function (options, ready) {
-    window._ufq = window._ufq || [];
-    load('//d2y71mjhnajxcg.cloudfront.net/js/userfox-stable.js');
-
-    // userfox creates its own queue, so we're ready right away.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    if (!traits.email) return;
-
-    // Initialize the library with the email now that we have it.
-    window._ufq.push(['init', {
-      clientId : this.options.clientId,
-      email    : traits.email
-    }]);
-
-    // Record traits to "track" if we have the required signup date `created`.
-    // userfox takes `signup_date` as a string of seconds since the epoch.
-    if (traits.created) {
-      traits.signup_date = (traits.created.getTime() / 1000).toString();
-      delete traits.created;
-      window._ufq.push(['track', traits]);
-    }
-  }
-
-});
-
-});
-require.register("analytics/src/providers/uservoice.js", function(exports, require, module){
-// http://feedback.uservoice.com/knowledgebase/articles/225-how-do-i-pass-custom-data-through-the-widget-and-i
-
-var Provider = require('../provider')
-  , load     = require('load-script')
-  , alias    = require('alias')
-  , clone    = require('clone');
-
-
-module.exports = Provider.extend({
-
-  name : 'UserVoice',
-
-  defaults : {
-    // These first two options are required.
-    widgetId          : null,
-    forumId           : null,
-    // Should we show the tab automatically?
-    showTab           : true,
-    // There's tons of options for the tab.
-    mode              : 'full',
-    primaryColor      : '#cc6d00',
-    linkColor         : '#007dbf',
-    defaultMode       : 'support',
-    tabLabel          : 'Feedback & Support',
-    tabColor          : '#cc6d00',
-    tabPosition       : 'middle-right',
-    tabInverted       : false
-  },
-
-  initialize : function (options, ready) {
-    window.UserVoice = window.UserVoice || [];
-    load('//widget.uservoice.com/' + options.widgetId + '.js', ready);
-
-    var optionsClone = clone(options);
-    alias(optionsClone, {
-      'forumId'         : 'forum_id',
-      'primaryColor'    : 'primary_color',
-      'linkColor'       : 'link_color',
-      'defaultMode'     : 'default_mode',
-      'tabLabel'        : 'tab_label',
-      'tabColor'        : 'tab_color',
-      'tabPosition'     : 'tab_position',
-      'tabInverted'     : 'tab_inverted'
-    });
-
-    // If we don't automatically show the tab, let them show it via
-    // javascript. This is the default name for the function in their snippet.
-    window.showClassicWidget = function (showWhat) {
-      window.UserVoice.push([showWhat || 'showLightbox', 'classic_widget', optionsClone]);
-    };
-
-    // If we *do* automatically show the tab, get on with it!
-    if (options.showTab) {
-      window.showClassicWidget('showTab');
-    }
-  },
-
-  identify : function (userId, traits) {
-    // Pull the ID into traits.
-    traits.id = userId;
-    window.UserVoice.push(['setCustomFields', traits]);
-  }
-
-});
-});
-require.register("analytics/src/providers/vero.js", function(exports, require, module){
-// https://github.com/getvero/vero-api/blob/master/sections/js.md
-
-var Provider = require('../provider')
-  , isEmail  = require('is-email')
-  , load     = require('load-script');
-
-
-module.exports = Provider.extend({
-
-  name : 'Vero',
-
-  key : 'apiKey',
-
-  defaults : {
-    apiKey : null
-  },
-
-  initialize : function (options, ready) {
-    window._veroq = window._veroq || [];
-    window._veroq.push(['init', { api_key: options.apiKey }]);
-    load('//d3qxef4rp70elm.cloudfront.net/m.js');
-
-    // Vero creates a queue, so it's ready immediately.
-    ready();
-  },
-
-  identify : function (userId, traits) {
-    // Don't do anything if we just have traits, because Vero
-    // requires a `userId`.
-    if (!userId || !traits.email) return;
-
-    // Vero takes the `userId` as part of the traits object.
-    traits.id = userId;
-
-    window._veroq.push(['user', traits]);
-  },
-
-  track : function (event, properties) {
-    window._veroq.push(['track', event, properties]);
-  }
-
-});
-});
-require.register("analytics/src/providers/visual-website-optimizer.js", function(exports, require, module){
-// http://v2.visualwebsiteoptimizer.com/tools/get_tracking_code.php
-// http://visualwebsiteoptimizer.com/knowledge/integration-of-vwo-with-kissmetrics/
-
-var each = require('each')
-  , inherit = require('inherit')
-  , nextTick = require('next-tick')
-  , Provider = require('../provider');
-
 
 /**
- * Expose `VWO`.
+ * Identify.
+ *
+ * @api public
+ * @param {Identify} event
  */
 
-module.exports = VWO;
+GA.prototype.identify = function(identify) {
+  var opts = this.options;
 
+  if (opts.sendUserId && identify.userId()) {
+    window.ga('set', 'userId', identify.userId());
+  }
+
+  // Set dimensions
+  var custom = metrics(user.traits(), opts);
+  if (len(custom)) window.ga('set', custom);
+};
 
 /**
- * `VWO` inherits from the generic `Provider`.
+ * Track.
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/events
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/field-reference
+ *
+ * @param {Track} event
  */
 
-function VWO () {
-  Provider.apply(this, arguments);
+GA.prototype.track = function(track, options) {
+  var contextOpts = track.options(this.name);
+  var interfaceOpts = this.options;
+  var opts = defaults(options || {}, contextOpts);
+  opts = defaults(opts, interfaceOpts);
+  var props = track.properties();
+  var campaign = track.proxy('context.campaign') || {};
+
+  // custom dimensions & metrics
+  var custom = metrics(props, interfaceOpts);
+  if (len(custom)) window.ga('set', custom);
+
+  var payload = {
+    eventAction: track.event(),
+    eventCategory: props.category || this._category || 'All',
+    eventLabel: props.label,
+    eventValue: formatValue(props.value || track.revenue()),
+    nonInteraction: !!(props.nonInteraction || opts.nonInteraction)
+  };
+
+  if (campaign.name) payload.campaignName = campaign.name;
+  if (campaign.source) payload.campaignSource = campaign.source;
+  if (campaign.medium) payload.campaignMedium = campaign.medium;
+  if (campaign.content) payload.campaignContent = campaign.content;
+  if (campaign.term) payload.campaignKeyword = campaign.term;
+
+  window.ga('send', 'event', payload);
+};
+
+/**
+ * Completed order.
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/ecommerce
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/ecommerce#multicurrency
+ *
+ * @param {Track} track
+ * @api private
+ */
+
+GA.prototype.completedOrder = function(track) {
+  var total = track.total() || track.revenue() || 0;
+  var orderId = track.orderId();
+  var products = track.products();
+  var props = track.properties();
+
+  // orderId is required.
+  if (!orderId) return;
+
+  // require ecommerce
+  if (!this.ecommerce) {
+    window.ga('require', 'ecommerce');
+    this.ecommerce = true;
+  }
+
+  // add transaction
+  window.ga('ecommerce:addTransaction', {
+    affiliation: props.affiliation,
+    shipping: track.shipping(),
+    revenue: total,
+    tax: track.tax(),
+    id: orderId,
+    currency: track.currency()
+  });
+
+  // add products
+  each(products, function(product) {
+    var productTrack = createProductTrack(track, product);
+    window.ga('ecommerce:addItem', {
+      category: productTrack.category(),
+      quantity: productTrack.quantity(),
+      price: productTrack.price(),
+      name: productTrack.name(),
+      sku: productTrack.sku(),
+      id: orderId,
+      currency: productTrack.currency()
+    });
+  });
+
+  // send
+  window.ga('ecommerce:send');
+};
+
+/**
+ * Initialize (classic).
+ *
+ * https://developers.google.com/analytics/devguides/collection/gajs/methods/gaJSApiBasicConfiguration
+ */
+
+GA.prototype.initializeClassic = function() {
+  var opts = this.options;
+  var anonymize = opts.anonymizeIp;
+  var domain = opts.domain;
+  var enhanced = opts.enhancedLinkAttribution;
+  var ignore = opts.ignoredReferrers;
+  var sample = opts.siteSpeedSampleRate;
+
+  window._gaq = window._gaq || [];
+  push('_setAccount', opts.trackingId);
+  push('_setAllowLinker', true);
+
+  if (anonymize) push('_gat._anonymizeIp');
+  if (domain) push('_setDomainName', domain);
+  if (sample) push('_setSiteSpeedSampleRate', sample);
+
+  if (enhanced) {
+    var protocol = document.location.protocol === 'https:' ? 'https:' : 'http:';
+    var pluginUrl = protocol + '//www.google-analytics.com/plugins/ga/inpage_linkid.js';
+    push('_require', 'inpage_linkid', pluginUrl);
+  }
+
+  if (ignore) {
+    if (!is.array(ignore)) ignore = [ignore];
+    each(ignore, function(domain) {
+      push('_addIgnoredRef', domain);
+    });
+  }
+
+  if (this.options.doubleClick) {
+    this.load('double click', this.ready);
+  } else {
+    var name = useHttps() ? 'https' : 'http';
+    this.load(name, this.ready);
+  }
+};
+
+/**
+ * Loaded? (classic)
+ *
+ * @return {Boolean}
+ */
+
+GA.prototype.loadedClassic = function() {
+  return !!(window._gaq && window._gaq.push !== Array.prototype.push);
+};
+
+/**
+ * Page (classic).
+ *
+ * https://developers.google.com/analytics/devguides/collection/gajs/methods/gaJSApiBasicConfiguration
+ *
+ * @param {Page} page
+ */
+
+GA.prototype.pageClassic = function(page) {
+  var category = page.category();
+  var props = page.properties();
+  var name = page.fullName();
+  var track;
+
+  push('_trackPageview', path(props, this.options));
+
+  // categorized pages
+  if (category && this.options.trackCategorizedPages) {
+    track = page.track(category);
+    this.track(track, { nonInteraction: 1 });
+  }
+
+  // named pages
+  if (name && this.options.trackNamedPages) {
+    track = page.track(name);
+    this.track(track, { nonInteraction: 1 });
+  }
+};
+
+/**
+ * Track (classic).
+ *
+ * https://developers.google.com/analytics/devguides/collection/gajs/methods/gaJSApiEventTracking
+ *
+ * @param {Track} track
+ */
+
+GA.prototype.trackClassic = function(track, options) {
+  var opts = options || track.options(this.name);
+  var props = track.properties();
+  var revenue = track.revenue();
+  var event = track.event();
+  var category = this._category || props.category || 'All';
+  var label = props.label;
+  var value = formatValue(revenue || props.value);
+  var nonInteraction = !!(props.nonInteraction || opts.nonInteraction);
+  push('_trackEvent', category, event, label, value, nonInteraction);
+};
+
+/**
+ * Completed order.
+ *
+ * https://developers.google.com/analytics/devguides/collection/gajs/gaTrackingEcommerce
+ * https://developers.google.com/analytics/devguides/collection/gajs/gaTrackingEcommerce#localcurrencies
+ *
+ * @param {Track} track
+ * @api private
+ */
+
+GA.prototype.completedOrderClassic = function(track) {
+  var total = track.total() || track.revenue() || 0;
+  var orderId = track.orderId();
+  var products = track.products() || [];
+  var props = track.properties();
+  var currency = track.currency();
+
+  // required
+  if (!orderId) return;
+
+  // add transaction
+  push('_addTrans',
+    orderId,
+    props.affiliation,
+    total,
+    track.tax(),
+    track.shipping(),
+    track.city(),
+    track.state(),
+    track.country());
+
+  // add items
+  each(products, function(product) {
+    var track = new Track({ properties: product });
+    push('_addItem',
+      orderId,
+      track.sku(),
+      track.name(),
+      track.category(),
+      track.price(),
+      track.quantity());
+  });
+
+  // send
+  push('_set', 'currencyCode', currency);
+  push('_trackTrans');
+};
+
+/**
+ * Return the path based on `properties` and `options`.
+ *
+ * @param {Object} properties
+ * @param {Object} options
+ * @return {string|undefined}
+ */
+
+function path(properties, options) {
+  if (!properties) return;
+  var str = properties.path;
+  if (options.includeSearch && properties.search) str += properties.search;
+  return str;
 }
 
-inherit(VWO, Provider);
-
-
 /**
- * Name.
+ * Format the value property to Google's liking.
+ *
+ * @param {Number} value
+ * @return {Number}
  */
 
-VWO.prototype.name = 'Visual Website Optimizer';
-
+function formatValue(value) {
+  if (!value || value < 0) return 0;
+  return Math.round(value);
+}
 
 /**
- * Default options.
+ * Map google's custom dimensions & metrics with `obj`.
+ *
+ * Example:
+ *
+ *      metrics({ revenue: 1.9 }, { { metrics : { revenue: 'metric8' } });
+ *      // => { metric8: 1.9 }
+ *
+ *      metrics({ revenue: 1.9 }, {});
+ *      // => {}
+ *
+ * @param {Object} obj
+ * @param {Object} data
+ * @return {Object|null}
+ * @api private
  */
 
-VWO.prototype.defaults = {
-  // Whether to replay variations into other integrations as traits.
-  replay : true
+function metrics(obj, data) {
+  var dimensions = data.dimensions;
+  var metrics = data.metrics;
+  var names = keys(metrics).concat(keys(dimensions));
+  var ret = {};
+
+  for (var i = 0; i < names.length; ++i) {
+    var name = names[i];
+    var key = metrics[name] || dimensions[name];
+    var value = dot(obj, name) || obj[name];
+    if (value == null) continue;
+    ret[key] = value;
+  }
+
+  return ret;
+}
+
+/**
+ * Loads ec.js (unless already loaded)
+ *
+ * @param {Track} track
+ */
+
+GA.prototype.loadEnhancedEcommerce = function(track) {
+  if (!this.enhancedEcommerceLoaded) {
+    window.ga('require', 'ec');
+    this.enhancedEcommerceLoaded = true;
+  }
+
+  // Ensure we set currency for every hit
+  window.ga('set', '&cu', track.currency());
 };
 
+/**
+ * Pushes an event and all previously set EE data to GA.
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.pushEnhancedEcommerce = function(track) {
+  // Send a custom non-interaction event to ensure all EE data is pushed.
+  // Without doing this we'd need to require page display after setting EE data.
+  window.ga('send', 'event', track.category() || 'EnhancedEcommerce', track.event(), { nonInteraction: 1 });
+};
+
+/**
+ * Started order - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#checkout-steps
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.startedOrderEnhanced = function(track) {
+  // same as viewed checkout step #1
+  this.viewedCheckoutStep(track);
+};
+
+/**
+ * Updated order - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#checkout-steps
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.updatedOrderEnhanced = function(track) {
+  // Same event as started order - will override
+  this.startedOrderEnhanced(track);
+};
+
+/**
+ * Viewed checkout step - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#checkout-steps
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.viewedCheckoutStepEnhanced = function(track) {
+  var products = track.products();
+  var props = track.properties();
+  var options = extractCheckoutOptions(props);
+
+  this.loadEnhancedEcommerce(track);
+
+  each(products, function(product) {
+    var productTrack = createProductTrack(track, product);
+    enhancedEcommerceTrackProduct(productTrack);
+  });
+
+  window.ga('ec:setAction', 'checkout', {
+    step: props.step || 1,
+    option: options || undefined
+  });
+
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Completed checkout step - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#checkout-options
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.completedCheckoutStepEnhanced = function(track) {
+  var props = track.properties();
+  var options = extractCheckoutOptions(props);
+
+  // Only send an event if we have step and options to update
+  if (!props.step || !options) return;
+
+  this.loadEnhancedEcommerce(track);
+
+  window.ga('ec:setAction', 'checkout_option', {
+    step: props.step || 1,
+    option: options
+  });
+
+  window.ga('send', 'event', 'Checkout', 'Option');
+};
+
+/**
+ * Completed order - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#measuring-transactions
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.completedOrderEnhanced = function(track) {
+  var total = track.total() || track.revenue() || 0;
+  var orderId = track.orderId();
+  var products = track.products();
+  var props = track.properties();
+
+  // orderId is required.
+  if (!orderId) return;
+
+  this.loadEnhancedEcommerce(track);
+
+  each(products, function(product) {
+    var productTrack = createProductTrack(track, product);
+    enhancedEcommerceTrackProduct(productTrack);
+  });
+
+  window.ga('ec:setAction', 'purchase', {
+    id: orderId,
+    affiliation: props.affiliation,
+    revenue: total,
+    tax: track.tax(),
+    shipping: track.shipping(),
+    coupon: track.coupon()
+  });
+
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Refunded order - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#measuring-refunds
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.refundedOrderEnhanced = function(track) {
+  var orderId = track.orderId();
+  var products = track.products();
+
+  // orderId is required.
+  if (!orderId) return;
+
+  this.loadEnhancedEcommerce(track);
+
+  // Without any products it's a full refund
+  each(products, function(product) {
+    var track = new Track({ properties: product });
+    window.ga('ec:addProduct', {
+      id: track.id() || track.sku(),
+      quantity: track.quantity()
+    });
+  });
+
+  window.ga('ec:setAction', 'refund', {
+    id: orderId
+  });
+
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Added product - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#add-remove-cart
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.addedProductEnhanced = function(track) {
+  this.loadEnhancedEcommerce(track);
+  enhancedEcommerceProductAction(track, 'add');
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Removed product - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#add-remove-cart
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.removedProductEnhanced = function(track) {
+  this.loadEnhancedEcommerce(track);
+  enhancedEcommerceProductAction(track, 'remove');
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Viewed product details - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#product-detail-view
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.viewedProductEnhanced = function(track) {
+  this.loadEnhancedEcommerce(track);
+  enhancedEcommerceProductAction(track, 'detail');
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Clicked product - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#measuring-actions
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.clickedProductEnhanced = function(track) {
+  var props = track.properties();
+
+  this.loadEnhancedEcommerce(track);
+  enhancedEcommerceProductAction(track, 'click', {
+    list: props.list
+  });
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Viewed promotion - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#measuring-promo-impressions
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.viewedPromotionEnhanced = function(track) {
+  var props = track.properties();
+
+  this.loadEnhancedEcommerce(track);
+  window.ga('ec:addPromo', {
+    id: track.id(),
+    name: track.name(),
+    creative: props.creative,
+    position: props.position
+  });
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Clicked promotion - Enhanced Ecommerce
+ *
+ * https://developers.google.com/analytics/devguides/collection/analyticsjs/enhanced-ecommerce#measuring-promo-clicks
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+GA.prototype.clickedPromotionEnhanced = function(track) {
+  var props = track.properties();
+
+  this.loadEnhancedEcommerce(track);
+  window.ga('ec:addPromo', {
+    id: track.id(),
+    name: track.name(),
+    creative: props.creative,
+    position: props.position
+  });
+  window.ga('ec:setAction', 'promo_click', {});
+  this.pushEnhancedEcommerce(track);
+};
+
+/**
+ * Enhanced ecommerce track product.
+ *
+ * Simple helper so that we don't repeat `ec:addProduct` everywhere.
+ *
+ * @api private
+ * @param {Track} track
+ */
+
+function enhancedEcommerceTrackProduct(track) {
+  var props = track.properties();
+
+  window.ga('ec:addProduct', {
+    id: track.id() || track.sku(),
+    name: track.name(),
+    category: track.category(),
+    quantity: track.quantity(),
+    price: track.price(),
+    brand: props.brand,
+    variant: props.variant,
+    currency: track.currency()
+  });
+}
+
+/**
+ * Set `action` on `track` with `data`.
+ *
+ * @api private
+ * @param {Track} track
+ * @param {String} action
+ * @param {Object} data
+ */
+
+function enhancedEcommerceProductAction(track, action, data) {
+  enhancedEcommerceTrackProduct(track);
+  window.ga('ec:setAction', action, data || {});
+}
+
+/**
+ * Extracts checkout options.
+ *
+ * @api private
+ * @param {Object} props
+ * @return {string|null}
+ */
+
+function extractCheckoutOptions(props) {
+  var options = [
+    props.paymentMethod,
+    props.shippingMethod
+  ];
+
+  // Remove all nulls, empty strings, zeroes, and join with commas.
+  var valid = select(options, function(e) {return e; });
+  return valid.length > 0 ? valid.join(', ') : null;
+}
+
+/**
+ * Creates a track out of product properties.
+ *
+ * @api private
+ * @param {Track} track
+ * @param {Object} properties
+ * @return {Track}
+ */
+
+function createProductTrack(track, properties) {
+  properties.currency = properties.currency || track.currency();
+  return new Track({ properties: properties });
+}
+
+}, {"facade":7,"defaults":84,"obj-case":40,"each":4,"analytics.js-integration":85,"is":16,"object":18,"global-queue":86,"select":87,"use-https":88}],
+84: [function(require, module, exports) {
+/**
+ * Expose `defaults`.
+ */
+module.exports = defaults;
+
+function defaults (dest, defaults) {
+  for (var prop in defaults) {
+    if (! (prop in dest)) {
+      dest[prop] = defaults[prop];
+    }
+  }
+
+  return dest;
+};
+
+}, {}],
+85: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var bind = require('bind');
+var clone = require('clone');
+var debug = require('debug');
+var defaults = require('defaults');
+var extend = require('extend');
+var slug = require('slug');
+var protos = require('./protos');
+var statics = require('./statics');
+
+/**
+ * Create a new `Integration` constructor.
+ *
+ * @constructs Integration
+ * @param {string} name
+ * @return {Function} Integration
+ */
+
+function createIntegration(name){
+  /**
+   * Initialize a new `Integration`.
+   *
+   * @class
+   * @param {Object} options
+   */
+
+  function Integration(options){
+    if (options && options.addIntegration) {
+      // plugin
+      return options.addIntegration(Integration);
+    }
+    this.debug = debug('analytics:integration:' + slug(name));
+    this.options = defaults(clone(options) || {}, this.defaults);
+    this._queue = [];
+    this.once('ready', bind(this, this.flush));
+
+    Integration.emit('construct', this);
+    this.ready = bind(this, this.ready);
+    this._wrapInitialize();
+    this._wrapPage();
+    this._wrapTrack();
+  }
+
+  Integration.prototype.defaults = {};
+  Integration.prototype.globals = [];
+  Integration.prototype.templates = {};
+  Integration.prototype.name = name;
+  extend(Integration, statics);
+  extend(Integration.prototype, protos);
+
+  return Integration;
+}
+
+/**
+ * Exports.
+ */
+
+module.exports = createIntegration;
+
+}, {"bind":89,"clone":11,"debug":90,"defaults":14,"extend":91,"slug":92,"./protos":93,"./statics":94}],
+89: [function(require, module, exports) {
+
+var bind = require('bind')
+  , bindAll = require('bind-all');
+
+
+/**
+ * Expose `bind`.
+ */
+
+module.exports = exports = bind;
+
+
+/**
+ * Expose `bindAll`.
+ */
+
+exports.all = bindAll;
+
+
+/**
+ * Expose `bindMethods`.
+ */
+
+exports.methods = bindMethods;
+
+
+/**
+ * Bind `methods` on `obj` to always be called with the `obj` as context.
+ *
+ * @param {Object} obj
+ * @param {String} methods...
+ */
+
+function bindMethods (obj, methods) {
+  methods = [].slice.call(arguments, 1);
+  for (var i = 0, method; method = methods[i]; i++) {
+    obj[method] = bind(obj, obj[method]);
+  }
+  return obj;
+}
+}, {"bind":53,"bind-all":54}],
+90: [function(require, module, exports) {
+if ('undefined' == typeof window) {
+  module.exports = require('./lib/debug');
+} else {
+  module.exports = require('./debug');
+}
+
+}, {"./lib/debug":95,"./debug":96}],
+95: [function(require, module, exports) {
+/**
+ * Module dependencies.
+ */
+
+var tty = require('tty');
+
+/**
+ * Expose `debug()` as the module.
+ */
+
+module.exports = debug;
+
+/**
+ * Enabled debuggers.
+ */
+
+var names = []
+  , skips = [];
+
+(process.env.DEBUG || '')
+  .split(/[\s,]+/)
+  .forEach(function(name){
+    name = name.replace('*', '.*?');
+    if (name[0] === '-') {
+      skips.push(new RegExp('^' + name.substr(1) + '$'));
+    } else {
+      names.push(new RegExp('^' + name + '$'));
+    }
+  });
+
+/**
+ * Colors.
+ */
+
+var colors = [6, 2, 3, 4, 5, 1];
+
+/**
+ * Previous debug() call.
+ */
+
+var prev = {};
+
+/**
+ * Previously assigned color.
+ */
+
+var prevColor = 0;
+
+/**
+ * Is stdout a TTY? Colored output is disabled when `true`.
+ */
+
+var isatty = tty.isatty(2);
+
+/**
+ * Select a color.
+ *
+ * @return {Number}
+ * @api private
+ */
+
+function color() {
+  return colors[prevColor++ % colors.length];
+}
+
+/**
+ * Humanize the given `ms`.
+ *
+ * @param {Number} m
+ * @return {String}
+ * @api private
+ */
+
+function humanize(ms) {
+  var sec = 1000
+    , min = 60 * 1000
+    , hour = 60 * min;
+
+  if (ms >= hour) return (ms / hour).toFixed(1) + 'h';
+  if (ms >= min) return (ms / min).toFixed(1) + 'm';
+  if (ms >= sec) return (ms / sec | 0) + 's';
+  return ms + 'ms';
+}
+
+/**
+ * Create a debugger with the given `name`.
+ *
+ * @param {String} name
+ * @return {Type}
+ * @api public
+ */
+
+function debug(name) {
+  function disabled(){}
+  disabled.enabled = false;
+
+  var match = skips.some(function(re){
+    return re.test(name);
+  });
+
+  if (match) return disabled;
+
+  match = names.some(function(re){
+    return re.test(name);
+  });
+
+  if (!match) return disabled;
+  var c = color();
+
+  function colored(fmt) {
+    fmt = coerce(fmt);
+
+    var curr = new Date;
+    var ms = curr - (prev[name] || curr);
+    prev[name] = curr;
+
+    fmt = '  \u001b[9' + c + 'm' + name + ' '
+      + '\u001b[3' + c + 'm\u001b[90m'
+      + fmt + '\u001b[3' + c + 'm'
+      + ' +' + humanize(ms) + '\u001b[0m';
+
+    console.error.apply(this, arguments);
+  }
+
+  function plain(fmt) {
+    fmt = coerce(fmt);
+
+    fmt = new Date().toUTCString()
+      + ' ' + name + ' ' + fmt;
+    console.error.apply(this, arguments);
+  }
+
+  colored.enabled = plain.enabled = true;
+
+  return isatty || process.env.DEBUG_COLORS
+    ? colored
+    : plain;
+}
+
+/**
+ * Coerce `val`.
+ */
+
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
+}, {}],
+96: [function(require, module, exports) {
+
+/**
+ * Expose `debug()` as the module.
+ */
+
+module.exports = debug;
+
+/**
+ * Create a debugger with the given `name`.
+ *
+ * @param {String} name
+ * @return {Type}
+ * @api public
+ */
+
+function debug(name) {
+  if (!debug.enabled(name)) return function(){};
+
+  return function(fmt){
+    fmt = coerce(fmt);
+
+    var curr = new Date;
+    var ms = curr - (debug[name] || curr);
+    debug[name] = curr;
+
+    fmt = name
+      + ' '
+      + fmt
+      + ' +' + debug.humanize(ms);
+
+    // This hackery is required for IE8
+    // where `console.log` doesn't have 'apply'
+    window.console
+      && console.log
+      && Function.prototype.apply.call(console.log, console, arguments);
+  }
+}
+
+/**
+ * The currently active debug mode names.
+ */
+
+debug.names = [];
+debug.skips = [];
+
+/**
+ * Enables a debug mode by name. This can include modes
+ * separated by a colon and wildcards.
+ *
+ * @param {String} name
+ * @api public
+ */
+
+debug.enable = function(name) {
+  try {
+    localStorage.debug = name;
+  } catch(e){}
+
+  var split = (name || '').split(/[\s,]+/)
+    , len = split.length;
+
+  for (var i = 0; i < len; i++) {
+    name = split[i].replace('*', '.*?');
+    if (name[0] === '-') {
+      debug.skips.push(new RegExp('^' + name.substr(1) + '$'));
+    }
+    else {
+      debug.names.push(new RegExp('^' + name + '$'));
+    }
+  }
+};
+
+/**
+ * Disable debug output.
+ *
+ * @api public
+ */
+
+debug.disable = function(){
+  debug.enable('');
+};
+
+/**
+ * Humanize the given `ms`.
+ *
+ * @param {Number} m
+ * @return {String}
+ * @api private
+ */
+
+debug.humanize = function(ms) {
+  var sec = 1000
+    , min = 60 * 1000
+    , hour = 60 * min;
+
+  if (ms >= hour) return (ms / hour).toFixed(1) + 'h';
+  if (ms >= min) return (ms / min).toFixed(1) + 'm';
+  if (ms >= sec) return (ms / sec | 0) + 's';
+  return ms + 'ms';
+};
+
+/**
+ * Returns true if the given mode name is enabled, false otherwise.
+ *
+ * @param {String} name
+ * @return {Boolean}
+ * @api public
+ */
+
+debug.enabled = function(name) {
+  for (var i = 0, len = debug.skips.length; i < len; i++) {
+    if (debug.skips[i].test(name)) {
+      return false;
+    }
+  }
+  for (var i = 0, len = debug.names.length; i < len; i++) {
+    if (debug.names[i].test(name)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Coerce `val`.
+ */
+
+function coerce(val) {
+  if (val instanceof Error) return val.stack || val.message;
+  return val;
+}
+
+// persist
+
+try {
+  if (window.localStorage) debug.enable(localStorage.debug);
+} catch(e){}
+
+}, {}],
+91: [function(require, module, exports) {
+
+module.exports = function extend (object) {
+    // Takes an unlimited number of extenders.
+    var args = Array.prototype.slice.call(arguments, 1);
+
+    // For each extender, copy their properties on our object.
+    for (var i = 0, source; source = args[i]; i++) {
+        if (!source) continue;
+        for (var property in source) {
+            object[property] = source[property];
+        }
+    }
+
+    return object;
+};
+}, {}],
+92: [function(require, module, exports) {
+
+/**
+ * Generate a slug from the given `str`.
+ *
+ * example:
+ *
+ *        generate('foo bar');
+ *        // > foo-bar
+ *
+ * @param {String} str
+ * @param {Object} options
+ * @config {String|RegExp} [replace] characters to replace, defaulted to `/[^a-z0-9]/g`
+ * @config {String} [separator] separator to insert, defaulted to `-`
+ * @return {String}
+ */
+
+module.exports = function (str, options) {
+  options || (options = {});
+  return str.toLowerCase()
+    .replace(options.replace || /[^a-z0-9]/g, ' ')
+    .replace(/^ +| +$/g, '')
+    .replace(/ +/g, options.separator || '-')
+};
+
+}, {}],
+93: [function(require, module, exports) {
+/* global setInterval:true setTimeout:true */
+
+/**
+ * Module dependencies.
+ */
+
+var Emitter = require('emitter');
+var after = require('after');
+var each = require('each');
+var events = require('analytics-events');
+var fmt = require('fmt');
+var foldl = require('foldl');
+var loadIframe = require('load-iframe');
+var loadScript = require('load-script');
+var normalize = require('to-no-case');
+var nextTick = require('next-tick');
+var type = require('type');
+
+/**
+ * Noop.
+ */
+
+function noop(){}
+
+/**
+ * hasOwnProperty reference.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Window defaults.
+ */
+
+var onerror = window.onerror;
+var onload = null;
+var setInterval = window.setInterval;
+var setTimeout = window.setTimeout;
+
+/**
+ * Mixin emitter.
+ */
+
+/* eslint-disable new-cap */
+Emitter(exports);
+/* eslint-enable new-cap */
 
 /**
  * Initialize.
  */
 
-VWO.prototype.initialize = function (options, ready) {
-  if (options.replay) this.replay();
-  ready();
+exports.initialize = function(){
+  var ready = this.ready;
+  nextTick(ready);
 };
 
-
 /**
- * Replay the experiments the user has seen as traits to all other integrations.
- * Wait for the next tick to replay so that the `analytics` object and all of
- * the integrations are fully initialized.
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
  */
 
-VWO.prototype.replay = function () {
-  var analytics = this.analytics;
-  nextTick(function () {
-    experiments(function (err, traits) {
-      if (traits) analytics.identify(traits);
-    });
-  });
+exports.loaded = function(){
+  return false;
 };
 
-
 /**
- * Get dictionary of experiment keys and variations.
- * http://visualwebsiteoptimizer.com/knowledge/integration-of-vwo-with-kissmetrics/
+ * Page.
  *
- * @param  {Function} callback  Called with `err, experiments`.
- * @return {Object}             Dictionary of experiments and variations.
+ * @api public
+ * @param {Page} page
  */
 
-function experiments (callback) {
-  enqueue(function () {
-    var data = {};
-    var ids = window._vwo_exp_ids;
-    if (!ids) return callback();
-    each(ids, function (id) {
-      var name = variation(id);
-      if (name) data['Experiment: ' + id] = name;
-    });
-    callback(null, data);
-  });
-}
-
+/* eslint-disable no-unused-vars */
+exports.page = function(page){};
+/* eslint-enable no-unused-vars */
 
 /**
- * Add a function to the VWO queue, creating one if it doesn't exist.
+ * Track.
  *
- * @param {Function} fn  Function to enqueue.
+ * @api public
+ * @param {Track} track
  */
 
-function enqueue (fn) {
-  window._vis_opt_queue || (window._vis_opt_queue = []);
-  window._vis_opt_queue.push(fn);
-}
-
+/* eslint-disable no-unused-vars */
+exports.track = function(track){};
+/* eslint-enable no-unused-vars */
 
 /**
- * Get the chosen variation's name from an experiment `id`.
- * http://visualwebsiteoptimizer.com/knowledge/integration-of-vwo-with-kissmetrics/
+ * Get events that match `event`.
  *
- * @param  {String} id  ID of the experiment to read.
- * @return {String}     Variation name.
+ * @api public
+ * @param {Object|Object[]} events An object or array of objects pulled from
+ * settings.mapping.
+ * @param {string} event The name of the event whose metdata we're looking for.
+ * @return {Array} An array of settings that match the input `event` name.
+ * @example
+ * var events = { my_event: 'a4991b88' };
+ * .map(events, 'My Event');
+ * // => ["a4991b88"]
+ * .map(events, 'whatever');
+ * // => []
+ *
+ * var events = [{ key: 'my event', value: '9b5eb1fa' }];
+ * .map(events, 'my_event');
+ * // => ["9b5eb1fa"]
+ * .map(events, 'whatever');
+ * // => []
  */
 
-function variation (id) {
-  var experiments = window._vwo_exp;
-  if (!experiments) return null;
-  var experiment = experiments[id];
-  var variationId = experiment.combination_chosen;
-  return variationId ? experiment.comb_n[variationId] : null;
-}
-});
-require.register("analytics/src/providers/woopra.js", function(exports, require, module){
-// http://www.woopra.com/docs/setup/javascript-tracking/
+exports.map = function(events, event){
+  var normalizedEvent = normalize(event);
 
-var Provider = require('../provider')
-  , each     = require('each')
-  , extend   = require('extend')
-  , isEmail  = require('is-email')
-  , load     = require('load-script')
-  , type     = require('type')
-  , user     = require('../user');
+  return foldl(function(matchingEvents, val, key, events) {
+    // If true, this is a `mixed` value, which is structured like so:
+    //     { key: 'testEvent', value: { event: 'testEvent', someValue: 'xyz' } }
+    // We need to extract the key, which we use to match against
+    // `normalizedEvent`, and return `value` as part of `matchingEvents` if that
+    // match succeds.
+    if (type(events) === 'array') {
+      // If there's no key attached to this event mapping (unusual), skip this
+      // item.
+      if (!val.key) return matchingEvents;
+      // Extract the key and value from the `mixed` object.
+      key = val.key;
+      val = val.value;
+    }
 
+    if (normalize(key) === normalizedEvent) {
+      matchingEvents.push(val);
+    }
 
-module.exports = Provider.extend({
+    return matchingEvents;
+  }, [], events);
+};
 
-  name : 'Woopra',
+/**
+ * Invoke a `method` that may or may not exist on the prototype with `args`,
+ * queueing or not depending on whether the integration is "ready". Don't
+ * trust the method call, since it contains integration party code.
+ *
+ * @api private
+ * @param {string} method
+ * @param {...*} args
+ */
 
-  key : 'domain',
+exports.invoke = function(method){
+  if (!this[method]) return;
+  var args = Array.prototype.slice.call(arguments, 1);
+  if (!this._ready) return this.queue(method, args);
+  var ret;
 
-  defaults : {
-    domain : null
-  },
-
-  initialize : function (options, ready) {
-    // Woopra gives us a nice ready callback.
-    var self = this;
-
-    window.woopraReady = function (tracker) {
-      tracker.setDomain(self.options.domain);
-      tracker.setIdleTimeout(300000);
-
-      var userId = user.id()
-        , traits = user.traits();
-
-      addTraits(userId, traits, tracker);
-      tracker.track();
-
-      ready();
-      return false;
-    };
-
-    load('//static.woopra.com/js/woopra.js');
-  },
-
-  identify : function (userId, traits) {
-    // We aren't guaranteed a tracker.
-    if (!window.woopraTracker) return;
-    addTraits(userId, traits, window.woopraTracker);
-  },
-
-  track : function (event, properties) {
-    // We aren't guaranteed a tracker.
-    if (!window.woopraTracker) return;
-
-    // Woopra takes its `event` as the `name` key.
-    properties || (properties = {});
-    properties.name = event;
-
-    window.woopraTracker.pushEvent(properties);
+  try {
+    this.debug('%s with %o', method, args);
+    ret = this[method].apply(this, args);
+  } catch (e) {
+    this.debug('error %o calling %s with %o', e, method, args);
   }
 
-});
+  return ret;
+};
+
+/**
+ * Queue a `method` with `args`. If the integration assumes an initial
+ * pageview, then let the first call to `page` pass through.
+ *
+ * @api private
+ * @param {string} method
+ * @param {Array} args
+ */
+
+exports.queue = function(method, args){
+  if (method === 'page' && this._assumesPageview && !this._initialized) {
+    return this.page.apply(this, args);
+  }
+
+  this._queue.push({ method: method, args: args });
+};
+
+/**
+ * Flush the internal queue.
+ *
+ * @api private
+ */
+
+exports.flush = function(){
+  this._ready = true;
+  var self = this;
+
+  each(this._queue, function(call){
+    self[call.method].apply(self, call.args);
+  });
+
+  // Empty the queue.
+  this._queue.length = 0;
+};
+
+/**
+ * Reset the integration, removing its global variables.
+ *
+ * @api private
+ */
+
+exports.reset = function(){
+  for (var i = 0; i < this.globals.length; i++) {
+    window[this.globals[i]] = undefined;
+  }
+
+  window.setTimeout = setTimeout;
+  window.setInterval = setInterval;
+  window.onerror = onerror;
+  window.onload = onload;
+};
+
+/**
+ * Load a tag by `name`.
+ *
+ * @param {string} name The name of the tag.
+ * @param {Object} locals Locals used to populate the tag's template variables
+ * (e.g. `userId` in '<img src="https://whatever.com/{{ userId }}">').
+ * @param {Function} [callback=noop] A callback, invoked when the tag finishes
+ * loading.
+ */
+
+exports.load = function(name, locals, callback){
+  // Argument shuffling
+  if (typeof name === 'function') { callback = name; locals = null; name = null; }
+  if (name && typeof name === 'object') { callback = locals; locals = name; name = null; }
+  if (typeof locals === 'function') { callback = locals; locals = null; }
+
+  // Default arguments
+  name = name || 'library';
+  locals = locals || {};
+
+  locals = this.locals(locals);
+  var template = this.templates[name];
+  if (!template) throw new Error(fmt('template "%s" not defined.', name));
+  var attrs = render(template, locals);
+  callback = callback || noop;
+  var self = this;
+  var el;
+
+  switch (template.type) {
+    case 'img':
+      attrs.width = 1;
+      attrs.height = 1;
+      el = loadImage(attrs, callback);
+      break;
+    case 'script':
+      el = loadScript(attrs, function(err){
+        if (!err) return callback();
+        self.debug('error loading "%s" error="%s"', self.name, err);
+      });
+      // TODO: hack until refactoring load-script
+      delete attrs.src;
+      each(attrs, function(key, val){
+        el.setAttribute(key, val);
+      });
+      break;
+    case 'iframe':
+      el = loadIframe(attrs, callback);
+      break;
+    default:
+      // No default case
+  }
+
+  return el;
+};
+
+/**
+ * Locals for tag templates.
+ *
+ * By default it includes a cache buster and all of the options.
+ *
+ * @param {Object} [locals]
+ * @return {Object}
+ */
+
+exports.locals = function(locals){
+  locals = locals || {};
+  var cache = Math.floor(new Date().getTime() / 3600000);
+  if (!locals.hasOwnProperty('cache')) locals.cache = cache;
+  each(this.options, function(key, val){
+    if (!locals.hasOwnProperty(key)) locals[key] = val;
+  });
+  return locals;
+};
+
+/**
+ * Simple way to emit ready.
+ *
+ * @api public
+ */
+
+exports.ready = function(){
+  this.emit('ready');
+};
+
+/**
+ * Wrap the initialize method in an exists check, so we don't have to do it for
+ * every single integration.
+ *
+ * @api private
+ */
+
+exports._wrapInitialize = function(){
+  var initialize = this.initialize;
+  this.initialize = function(){
+    this.debug('initialize');
+    this._initialized = true;
+    var ret = initialize.apply(this, arguments);
+    this.emit('initialize');
+    return ret;
+  };
+
+  if (this._assumesPageview) this.initialize = after(2, this.initialize);
+};
+
+/**
+ * Wrap the page method to call `initialize` instead if the integration assumes
+ * a pageview.
+ *
+ * @api private
+ */
+
+exports._wrapPage = function(){
+  var page = this.page;
+  this.page = function(){
+    if (this._assumesPageview && !this._initialized) {
+      return this.initialize.apply(this, arguments);
+    }
+
+    return page.apply(this, arguments);
+  };
+};
+
+/**
+ * Wrap the track method to call other ecommerce methods if available depending
+ * on the `track.event()`.
+ *
+ * @api private
+ */
+
+exports._wrapTrack = function(){
+  var t = this.track;
+  this.track = function(track){
+    var event = track.event();
+    var called;
+    var ret;
+
+    for (var method in events) {
+      if (has.call(events, method)) {
+        var regexp = events[method];
+        if (!this[method]) continue;
+        if (!regexp.test(event)) continue;
+        ret = this[method].apply(this, arguments);
+        called = true;
+        break;
+      }
+    }
+
+    if (!called) ret = t.apply(this, arguments);
+    return ret;
+  };
+};
+
+/**
+ * TODO: Document me
+ *
+ * @api private
+ * @param {Object} attrs
+ * @param {Function} fn
+ * @return {undefined}
+ */
+
+function loadImage(attrs, fn){
+  fn = fn || function(){};
+  var img = new Image();
+  img.onerror = error(fn, 'failed to load pixel', img);
+  img.onload = function(){ fn(); };
+  img.src = attrs.src;
+  img.width = 1;
+  img.height = 1;
+  return img;
+}
+
+/**
+ * TODO: Document me
+ *
+ * @api private
+ * @param {Function} fn
+ * @param {string} message
+ * @param {Element} img
+ * @return {Function}
+ */
+
+function error(fn, message, img){
+  return function(e){
+    e = e || window.event;
+    var err = new Error(message);
+    err.event = e;
+    err.source = img;
+    fn(err);
+  };
+}
+
+/**
+ * Render template + locals into an `attrs` object.
+ *
+ * @api private
+ * @param {Object} template
+ * @param {Object} locals
+ * @return {Object}
+ */
+
+function render(template, locals){
+  return foldl(function(attrs, val, key) {
+    attrs[key] = val.replace(/\{\{\ *(\w+)\ *\}\}/g, function(_, $1){
+      return locals[$1];
+    });
+    return attrs;
+  }, {}, template.attrs);
+}
+
+}, {"emitter":6,"after":8,"each":97,"analytics-events":98,"fmt":99,"foldl":100,"load-iframe":101,"load-script":102,"to-no-case":103,"next-tick":55,"type":104}],
+97: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+try {
+  var type = require('type');
+} catch (err) {
+  var type = require('component-type');
+}
+
+var toFunction = require('to-function');
+
+/**
+ * HOP reference.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Iterate the given `obj` and invoke `fn(val, i)`
+ * in optional context `ctx`.
+ *
+ * @param {String|Array|Object} obj
+ * @param {Function} fn
+ * @param {Object} [ctx]
+ * @api public
+ */
+
+module.exports = function(obj, fn, ctx){
+  fn = toFunction(fn);
+  ctx = ctx || this;
+  switch (type(obj)) {
+    case 'array':
+      return array(obj, fn, ctx);
+    case 'object':
+      if ('number' == typeof obj.length) return array(obj, fn, ctx);
+      return object(obj, fn, ctx);
+    case 'string':
+      return string(obj, fn, ctx);
+  }
+};
+
+/**
+ * Iterate string chars.
+ *
+ * @param {String} obj
+ * @param {Function} fn
+ * @param {Object} ctx
+ * @api private
+ */
+
+function string(obj, fn, ctx) {
+  for (var i = 0; i < obj.length; ++i) {
+    fn.call(ctx, obj.charAt(i), i);
+  }
+}
+
+/**
+ * Iterate object keys.
+ *
+ * @param {Object} obj
+ * @param {Function} fn
+ * @param {Object} ctx
+ * @api private
+ */
+
+function object(obj, fn, ctx) {
+  for (var key in obj) {
+    if (has.call(obj, key)) {
+      fn.call(ctx, key, obj[key]);
+    }
+  }
+}
+
+/**
+ * Iterate array-ish.
+ *
+ * @param {Array|Object} obj
+ * @param {Function} fn
+ * @param {Object} ctx
+ * @api private
+ */
+
+function array(obj, fn, ctx) {
+  for (var i = 0; i < obj.length; ++i) {
+    fn.call(ctx, obj[i], i);
+  }
+}
+
+}, {"type":104,"component-type":104,"to-function":72}],
+104: [function(require, module, exports) {
+
+/**
+ * toString ref.
+ */
+
+var toString = Object.prototype.toString;
+
+/**
+ * Return the type of `val`.
+ *
+ * @param {Mixed} val
+ * @return {String}
+ * @api public
+ */
+
+module.exports = function(val){
+  switch (toString.call(val)) {
+    case '[object Function]': return 'function';
+    case '[object Date]': return 'date';
+    case '[object RegExp]': return 'regexp';
+    case '[object Arguments]': return 'arguments';
+    case '[object Array]': return 'array';
+    case '[object String]': return 'string';
+  }
+
+  if (val === null) return 'null';
+  if (val === undefined) return 'undefined';
+  if (val && val.nodeType === 1) return 'element';
+  if (val === Object(val)) return 'object';
+
+  return typeof val;
+};
+
+}, {}],
+98: [function(require, module, exports) {
+
+module.exports = {
+  removedProduct: /^[ _]?removed[ _]?product[ _]?$/i,
+  viewedProduct: /^[ _]?viewed[ _]?product[ _]?$/i,
+  viewedProductCategory: /^[ _]?viewed[ _]?product[ _]?category[ _]?$/i,
+  addedProduct: /^[ _]?added[ _]?product[ _]?$/i,
+  completedOrder: /^[ _]?completed[ _]?order[ _]?$/i,
+  startedOrder: /^[ _]?started[ _]?order[ _]?$/i,
+  updatedOrder: /^[ _]?updated[ _]?order[ _]?$/i,
+  refundedOrder: /^[ _]?refunded?[ _]?order[ _]?$/i,
+  viewedProductDetails: /^[ _]?viewed[ _]?product[ _]?details?[ _]?$/i,
+  clickedProduct: /^[ _]?clicked[ _]?product[ _]?$/i,
+  viewedPromotion: /^[ _]?viewed[ _]?promotion?[ _]?$/i,
+  clickedPromotion: /^[ _]?clicked[ _]?promotion?[ _]?$/i,
+  viewedCheckoutStep: /^[ _]?viewed[ _]?checkout[ _]?step[ _]?$/i,
+  completedCheckoutStep: /^[ _]?completed[ _]?checkout[ _]?step[ _]?$/i
+};
+
+}, {}],
+99: [function(require, module, exports) {
+
+/**
+ * toString.
+ */
+
+var toString = window.JSON
+  ? JSON.stringify
+  : function(_){ return String(_); };
+
+/**
+ * Export `fmt`
+ */
+
+module.exports = fmt;
+
+/**
+ * Formatters
+ */
+
+fmt.o = toString;
+fmt.s = String;
+fmt.d = parseInt;
+
+/**
+ * Format the given `str`.
+ *
+ * @param {String} str
+ * @param {...} args
+ * @return {String}
+ * @api public
+ */
+
+function fmt(str){
+  var args = [].slice.call(arguments, 1);
+  var j = 0;
+
+  return str.replace(/%([a-z])/gi, function(_, f){
+    return fmt[f]
+      ? fmt[f](args[j++])
+      : _ + f;
+  });
+}
+
+}, {}],
+100: [function(require, module, exports) {
+'use strict';
+
+/**
+ * Module dependencies.
+ */
+
+// XXX: Hacky fix for Duo not supporting scoped modules
+var each; try { each = require('@ndhoule/each'); } catch(e) { each = require('each'); }
+
+/**
+ * Reduces all the values in a collection down into a single value. Does so by iterating through the
+ * collection from left to right, repeatedly calling an `iterator` function and passing to it four
+ * arguments: `(accumulator, value, index, collection)`.
+ *
+ * Returns the final return value of the `iterator` function.
+ *
+ * @name foldl
+ * @api public
+ * @param {Function} iterator The function to invoke per iteration.
+ * @param {*} accumulator The initial accumulator value, passed to the first invocation of `iterator`.
+ * @param {Array|Object} collection The collection to iterate over.
+ * @return {*} The return value of the final call to `iterator`.
+ * @example
+ * foldl(function(total, n) {
+ *   return total + n;
+ * }, 0, [1, 2, 3]);
+ * //=> 6
+ *
+ * var phonebook = { bob: '555-111-2345', tim: '655-222-6789', sheila: '655-333-1298' };
+ *
+ * foldl(function(results, phoneNumber) {
+ *  if (phoneNumber[0] === '6') {
+ *    return results.concat(phoneNumber);
+ *  }
+ *  return results;
+ * }, [], phonebook);
+ * // => ['655-222-6789', '655-333-1298']
+ */
+
+var foldl = function foldl(iterator, accumulator, collection) {
+  if (typeof iterator !== 'function') {
+    throw new TypeError('Expected a function but received a ' + typeof iterator);
+  }
+
+  each(function(val, i, collection) {
+    accumulator = iterator(accumulator, val, i, collection);
+  }, collection);
+
+  return accumulator;
+};
+
+/**
+ * Exports.
+ */
+
+module.exports = foldl;
+
+}, {"each":70}],
+101: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var onload = require('script-onload');
+var tick = require('next-tick');
+var type = require('type');
+
+/**
+ * Expose `loadScript`.
+ *
+ * @param {Object} options
+ * @param {Function} fn
+ * @api public
+ */
+
+module.exports = function loadIframe(options, fn){
+  if (!options) throw new Error('Cant load nothing...');
+
+  // Allow for the simplest case, just passing a `src` string.
+  if ('string' == type(options)) options = { src : options };
+
+  var https = document.location.protocol === 'https:' ||
+              document.location.protocol === 'chrome-extension:';
+
+  // If you use protocol relative URLs, third-party scripts like Google
+  // Analytics break when testing with `file:` so this fixes that.
+  if (options.src && options.src.indexOf('//') === 0) {
+    options.src = https ? 'https:' + options.src : 'http:' + options.src;
+  }
+
+  // Allow them to pass in different URLs depending on the protocol.
+  if (https && options.https) options.src = options.https;
+  else if (!https && options.http) options.src = options.http;
+
+  // Make the `<iframe>` element and insert it before the first iframe on the
+  // page, which is guaranteed to exist since this Javaiframe is running.
+  var iframe = document.createElement('iframe');
+  iframe.src = options.src;
+  iframe.width = options.width || 1;
+  iframe.height = options.height || 1;
+  iframe.style.display = 'none';
+
+  // If we have a fn, attach event handlers, even in IE. Based off of
+  // the Third-Party Javascript script loading example:
+  // https://github.com/thirdpartyjs/thirdpartyjs-code/blob/master/examples/templates/02/loading-files/index.html
+  if ('function' == type(fn)) {
+    onload(iframe, fn);
+  }
+
+  tick(function(){
+    // Append after event listeners are attached for IE.
+    var firstScript = document.getElementsByTagName('script')[0];
+    firstScript.parentNode.insertBefore(iframe, firstScript);
+  });
+
+  // Return the iframe element in case they want to do anything special, like
+  // give it an ID or attributes.
+  return iframe;
+};
+}, {"script-onload":105,"next-tick":55,"type":45}],
+105: [function(require, module, exports) {
+
+// https://github.com/thirdpartyjs/thirdpartyjs-code/blob/master/examples/templates/02/loading-files/index.html
+
+/**
+ * Invoke `fn(err)` when the given `el` script loads.
+ *
+ * @param {Element} el
+ * @param {Function} fn
+ * @api public
+ */
+
+module.exports = function(el, fn){
+  return el.addEventListener
+    ? add(el, fn)
+    : attach(el, fn);
+};
+
+/**
+ * Add event listener to `el`, `fn()`.
+ *
+ * @param {Element} el
+ * @param {Function} fn
+ * @api private
+ */
+
+function add(el, fn){
+  el.addEventListener('load', function(_, e){ fn(null, e); }, false);
+  el.addEventListener('error', function(e){
+    var err = new Error('script error "' + el.src + '"');
+    err.event = e;
+    fn(err);
+  }, false);
+}
+
+/**
+ * Attach event.
+ *
+ * @param {Element} el
+ * @param {Function} fn
+ * @api private
+ */
+
+function attach(el, fn){
+  el.attachEvent('onreadystatechange', function(e){
+    if (!/complete|loaded/.test(el.readyState)) return;
+    fn(null, e);
+  });
+  el.attachEvent('onerror', function(e){
+    var err = new Error('failed to load the script "' + el.src + '"');
+    err.event = e || window.event;
+    fn(err);
+  });
+}
+
+}, {}],
+102: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var onload = require('script-onload');
+var tick = require('next-tick');
+var type = require('type');
+
+/**
+ * Expose `loadScript`.
+ *
+ * @param {Object} options
+ * @param {Function} fn
+ * @api public
+ */
+
+module.exports = function loadScript(options, fn){
+  if (!options) throw new Error('Cant load nothing...');
+
+  // Allow for the simplest case, just passing a `src` string.
+  if ('string' == type(options)) options = { src : options };
+
+  var https = document.location.protocol === 'https:' ||
+              document.location.protocol === 'chrome-extension:';
+
+  // If you use protocol relative URLs, third-party scripts like Google
+  // Analytics break when testing with `file:` so this fixes that.
+  if (options.src && options.src.indexOf('//') === 0) {
+    options.src = https ? 'https:' + options.src : 'http:' + options.src;
+  }
+
+  // Allow them to pass in different URLs depending on the protocol.
+  if (https && options.https) options.src = options.https;
+  else if (!https && options.http) options.src = options.http;
+
+  // Make the `<script>` element and insert it before the first script on the
+  // page, which is guaranteed to exist since this Javascript is running.
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.async = true;
+  script.src = options.src;
+
+  // If we have a fn, attach event handlers, even in IE. Based off of
+  // the Third-Party Javascript script loading example:
+  // https://github.com/thirdpartyjs/thirdpartyjs-code/blob/master/examples/templates/02/loading-files/index.html
+  if ('function' == type(fn)) {
+    onload(script, fn);
+  }
+
+  tick(function(){
+    // Append after event listeners are attached for IE.
+    var firstScript = document.getElementsByTagName('script')[0];
+    firstScript.parentNode.insertBefore(script, firstScript);
+  });
+
+  // Return the script element in case they want to do anything special, like
+  // give it an ID or attributes.
+  return script;
+};
+}, {"script-onload":105,"next-tick":55,"type":45}],
+103: [function(require, module, exports) {
+
+/**
+ * Expose `toNoCase`.
+ */
+
+module.exports = toNoCase;
 
 
 /**
- * Convenience function for updating the userId and traits.
- *
- * @param {String} userId    The user's ID.
- * @param {Object} traits    The user's traits.
- * @param {Tracker} tracker  The Woopra tracker object.
+ * Test whether a string is camel-case.
  */
 
-function addTraits (userId, traits, tracker) {
-  // Move a `userId` into `traits`.
-  if (userId) traits.id = userId;
-  each(traits, function (key, value) {
-    // Woopra seems to only support strings as trait values.
-    if ('string' === type(value)) tracker.addVisitorProperty(key, value);
+var hasSpace = /\s/;
+var hasSeparator = /[\W_]/;
+
+
+/**
+ * Remove any starting case from a `string`, like camel or snake, but keep
+ * spaces and punctuation that may be important otherwise.
+ *
+ * @param {String} string
+ * @return {String}
+ */
+
+function toNoCase (string) {
+  if (hasSpace.test(string)) return string.toLowerCase();
+  if (hasSeparator.test(string)) return unseparate(string).toLowerCase();
+  return uncamelize(string).toLowerCase();
+}
+
+
+/**
+ * Separator splitter.
+ */
+
+var separatorSplitter = /[\W_]+(.|$)/g;
+
+
+/**
+ * Un-separate a `string`.
+ *
+ * @param {String} string
+ * @return {String}
+ */
+
+function unseparate (string) {
+  return string.replace(separatorSplitter, function (m, next) {
+    return next ? ' ' + next : '';
   });
 }
-});
-require.alias("avetisk-defaults/index.js", "analytics/deps/defaults/index.js");
-require.alias("avetisk-defaults/index.js", "defaults/index.js");
 
-require.alias("component-clone/index.js", "analytics/deps/clone/index.js");
-require.alias("component-clone/index.js", "clone/index.js");
-require.alias("component-type/index.js", "component-clone/deps/type/index.js");
 
-require.alias("component-cookie/index.js", "analytics/deps/cookie/index.js");
-require.alias("component-cookie/index.js", "cookie/index.js");
+/**
+ * Camelcase splitter.
+ */
 
-require.alias("component-each/index.js", "analytics/deps/each/index.js");
-require.alias("component-each/index.js", "each/index.js");
-require.alias("component-type/index.js", "component-each/deps/type/index.js");
+var camelSplitter = /(.)([A-Z]+)/g;
 
-require.alias("component-event/index.js", "analytics/deps/event/index.js");
-require.alias("component-event/index.js", "event/index.js");
 
-require.alias("component-inherit/index.js", "analytics/deps/inherit/index.js");
-require.alias("component-inherit/index.js", "inherit/index.js");
+/**
+ * Un-camelcase a `string`.
+ *
+ * @param {String} string
+ * @return {String}
+ */
 
-require.alias("component-object/index.js", "analytics/deps/object/index.js");
-require.alias("component-object/index.js", "object/index.js");
+function uncamelize (string) {
+  return string.replace(camelSplitter, function (m, previous, uppers) {
+    return previous + ' ' + uppers.toLowerCase().split('').join(' ');
+  });
+}
+}, {}],
+94: [function(require, module, exports) {
 
-require.alias("component-querystring/index.js", "analytics/deps/querystring/index.js");
-require.alias("component-querystring/index.js", "querystring/index.js");
-require.alias("component-trim/index.js", "component-querystring/deps/trim/index.js");
+/**
+ * Module dependencies.
+ */
 
-require.alias("component-type/index.js", "analytics/deps/type/index.js");
-require.alias("component-type/index.js", "type/index.js");
+var Emitter = require('emitter');
+var domify = require('domify');
+var each = require('each');
+var includes = require('includes');
 
-require.alias("component-url/index.js", "analytics/deps/url/index.js");
-require.alias("component-url/index.js", "url/index.js");
+/**
+ * Mix in emitter.
+ */
 
-require.alias("segmentio-after/index.js", "analytics/deps/after/index.js");
-require.alias("segmentio-after/index.js", "after/index.js");
+/* eslint-disable new-cap */
+Emitter(exports);
+/* eslint-enable new-cap */
 
-require.alias("segmentio-alias/index.js", "analytics/deps/alias/index.js");
-require.alias("segmentio-alias/index.js", "alias/index.js");
+/**
+ * Add a new option to the integration by `key` with default `value`.
+ *
+ * @api public
+ * @param {string} key
+ * @param {*} value
+ * @return {Integration}
+ */
 
-require.alias("segmentio-bind-all/index.js", "analytics/deps/bind-all/index.js");
-require.alias("segmentio-bind-all/index.js", "analytics/deps/bind-all/index.js");
-require.alias("segmentio-bind-all/index.js", "bind-all/index.js");
-require.alias("component-bind/index.js", "segmentio-bind-all/deps/bind/index.js");
+exports.option = function(key, value){
+  this.prototype.defaults[key] = value;
+  return this;
+};
 
-require.alias("component-type/index.js", "segmentio-bind-all/deps/type/index.js");
+/**
+ * Add a new mapping option.
+ *
+ * This will create a method `name` that will return a mapping for you to use.
+ *
+ * @api public
+ * @param {string} name
+ * @return {Integration}
+ * @example
+ * Integration('My Integration')
+ *   .mapping('events');
+ *
+ * new MyIntegration().track('My Event');
+ *
+ * .track = function(track){
+ *   var events = this.events(track.event());
+ *   each(events, send);
+ *  };
+ */
 
-require.alias("segmentio-bind-all/index.js", "segmentio-bind-all/index.js");
+exports.mapping = function(name){
+  this.option(name, []);
+  this.prototype[name] = function(str){
+    return this.map(this.options[name], str);
+  };
+  return this;
+};
 
-require.alias("segmentio-canonical/index.js", "analytics/deps/canonical/index.js");
-require.alias("segmentio-canonical/index.js", "canonical/index.js");
+/**
+ * Register a new global variable `key` owned by the integration, which will be
+ * used to test whether the integration is already on the page.
+ *
+ * @api public
+ * @param {string} key
+ * @return {Integration}
+ */
 
-require.alias("segmentio-extend/index.js", "analytics/deps/extend/index.js");
-require.alias("segmentio-extend/index.js", "extend/index.js");
+exports.global = function(key){
+  this.prototype.globals.push(key);
+  return this;
+};
 
-require.alias("segmentio-is-email/index.js", "analytics/deps/is-email/index.js");
-require.alias("segmentio-is-email/index.js", "is-email/index.js");
+/**
+ * Mark the integration as assuming an initial pageview, so to defer loading
+ * the script until the first `page` call, noop the first `initialize`.
+ *
+ * @api public
+ * @return {Integration}
+ */
 
-require.alias("segmentio-is-meta/index.js", "analytics/deps/is-meta/index.js");
-require.alias("segmentio-is-meta/index.js", "is-meta/index.js");
+exports.assumesPageview = function(){
+  this.prototype._assumesPageview = true;
+  return this;
+};
 
-require.alias("segmentio-json/index.js", "analytics/deps/json/index.js");
-require.alias("segmentio-json/index.js", "json/index.js");
-require.alias("component-json-fallback/index.js", "segmentio-json/deps/json-fallback/index.js");
+/**
+ * Mark the integration as being "ready" once `load` is called.
+ *
+ * @api public
+ * @return {Integration}
+ */
 
-require.alias("segmentio-load-date/index.js", "analytics/deps/load-date/index.js");
-require.alias("segmentio-load-date/index.js", "load-date/index.js");
+exports.readyOnLoad = function(){
+  this.prototype._readyOnLoad = true;
+  return this;
+};
 
-require.alias("segmentio-load-script/index.js", "analytics/deps/load-script/index.js");
-require.alias("segmentio-load-script/index.js", "load-script/index.js");
-require.alias("component-type/index.js", "segmentio-load-script/deps/type/index.js");
+/**
+ * Mark the integration as being "ready" once `initialize` is called.
+ *
+ * @api public
+ * @return {Integration}
+ */
 
-require.alias("segmentio-new-date/index.js", "analytics/deps/new-date/index.js");
-require.alias("segmentio-new-date/index.js", "new-date/index.js");
-require.alias("segmentio-type/index.js", "segmentio-new-date/deps/type/index.js");
+exports.readyOnInitialize = function(){
+  this.prototype._readyOnInitialize = true;
+  return this;
+};
 
-require.alias("segmentio-on-body/index.js", "analytics/deps/on-body/index.js");
-require.alias("segmentio-on-body/index.js", "on-body/index.js");
-require.alias("component-each/index.js", "segmentio-on-body/deps/each/index.js");
-require.alias("component-type/index.js", "component-each/deps/type/index.js");
+/**
+ * Define a tag to be loaded.
+ *
+ * @api public
+ * @param {string} [name='library'] A nicename for the tag, commonly used in
+ * #load. Helpful when the integration has multiple tags and you need a way to
+ * specify which of the tags you want to load at a given time.
+ * @param {String} str DOM tag as string or URL.
+ * @return {Integration}
+ */
 
-require.alias("segmentio-store.js/store.js", "analytics/deps/store/store.js");
-require.alias("segmentio-store.js/store.js", "analytics/deps/store/index.js");
-require.alias("segmentio-store.js/store.js", "store/index.js");
-require.alias("segmentio-json/index.js", "segmentio-store.js/deps/json/index.js");
-require.alias("component-json-fallback/index.js", "segmentio-json/deps/json-fallback/index.js");
+exports.tag = function(name, tag){
+  if (tag == null) {
+    tag = name;
+    name = 'library';
+  }
+  this.prototype.templates[name] = objectify(tag);
+  return this;
+};
 
-require.alias("segmentio-store.js/store.js", "segmentio-store.js/index.js");
+/**
+ * Given a string, give back DOM attributes.
+ *
+ * Do it in a way where the browser doesn't load images or iframes. It turns
+ * out domify will load images/iframes because whenever you construct those
+ * DOM elements, the browser immediately loads them.
+ *
+ * @api private
+ * @param {string} str
+ * @return {Object}
+ */
 
-require.alias("segmentio-top-domain/index.js", "analytics/deps/top-domain/index.js");
-require.alias("segmentio-top-domain/index.js", "analytics/deps/top-domain/index.js");
-require.alias("segmentio-top-domain/index.js", "top-domain/index.js");
-require.alias("component-url/index.js", "segmentio-top-domain/deps/url/index.js");
+function objectify(str) {
+  // replace `src` with `data-src` to prevent image loading
+  str = str.replace(' src="', ' data-src="');
 
-require.alias("segmentio-top-domain/index.js", "segmentio-top-domain/index.js");
+  var el = domify(str);
+  var attrs = {};
 
-require.alias("timoxley-next-tick/index.js", "analytics/deps/next-tick/index.js");
-require.alias("timoxley-next-tick/index.js", "next-tick/index.js");
+  each(el.attributes, function(attr){
+    // then replace it back
+    var name = attr.name === 'data-src' ? 'src' : attr.name;
+    if (!includes(attr.name + '=', str)) return;
+    attrs[name] = attr.value;
+  });
 
-require.alias("yields-prevent/index.js", "analytics/deps/prevent/index.js");
-require.alias("yields-prevent/index.js", "prevent/index.js");
+  return {
+    type: el.tagName.toLowerCase(),
+    attrs: attrs
+  };
+}
 
-require.alias("analytics/src/index.js", "analytics/index.js");
+}, {"emitter":6,"domify":106,"each":97,"includes":68}],
+106: [function(require, module, exports) {
 
-if (typeof exports == "object") {
-  module.exports = require("analytics");
-} else if (typeof define == "function" && define.amd) {
-  define(function(){ return require("analytics"); });
-} else {
-  this["analytics"] = require("analytics");
-}})();
+/**
+ * Expose `parse`.
+ */
+
+module.exports = parse;
+
+/**
+ * Tests for browser support.
+ */
+
+var div = document.createElement('div');
+// Setup
+div.innerHTML = '  <link/><table></table><a href="/a">a</a><input type="checkbox"/>';
+// Make sure that link elements get serialized correctly by innerHTML
+// This requires a wrapper element in IE
+var innerHTMLBug = !div.getElementsByTagName('link').length;
+div = undefined;
+
+/**
+ * Wrap map from jquery.
+ */
+
+var map = {
+  legend: [1, '<fieldset>', '</fieldset>'],
+  tr: [2, '<table><tbody>', '</tbody></table>'],
+  col: [2, '<table><tbody></tbody><colgroup>', '</colgroup></table>'],
+  // for script/link/style tags to work in IE6-8, you have to wrap
+  // in a div with a non-whitespace character in front, ha!
+  _default: innerHTMLBug ? [1, 'X<div>', '</div>'] : [0, '', '']
+};
+
+map.td =
+map.th = [3, '<table><tbody><tr>', '</tr></tbody></table>'];
+
+map.option =
+map.optgroup = [1, '<select multiple="multiple">', '</select>'];
+
+map.thead =
+map.tbody =
+map.colgroup =
+map.caption =
+map.tfoot = [1, '<table>', '</table>'];
+
+map.polyline =
+map.ellipse =
+map.polygon =
+map.circle =
+map.text =
+map.line =
+map.path =
+map.rect =
+map.g = [1, '<svg xmlns="http://www.w3.org/2000/svg" version="1.1">','</svg>'];
+
+/**
+ * Parse `html` and return a DOM Node instance, which could be a TextNode,
+ * HTML DOM Node of some kind (<div> for example), or a DocumentFragment
+ * instance, depending on the contents of the `html` string.
+ *
+ * @param {String} html - HTML string to "domify"
+ * @param {Document} doc - The `document` instance to create the Node for
+ * @return {DOMNode} the TextNode, DOM Node, or DocumentFragment instance
+ * @api private
+ */
+
+function parse(html, doc) {
+  if ('string' != typeof html) throw new TypeError('String expected');
+
+  // default to the global `document` object
+  if (!doc) doc = document;
+
+  // tag name
+  var m = /<([\w:]+)/.exec(html);
+  if (!m) return doc.createTextNode(html);
+
+  html = html.replace(/^\s+|\s+$/g, ''); // Remove leading/trailing whitespace
+
+  var tag = m[1];
+
+  // body support
+  if (tag == 'body') {
+    var el = doc.createElement('html');
+    el.innerHTML = html;
+    return el.removeChild(el.lastChild);
+  }
+
+  // wrap map
+  var wrap = map[tag] || map._default;
+  var depth = wrap[0];
+  var prefix = wrap[1];
+  var suffix = wrap[2];
+  var el = doc.createElement('div');
+  el.innerHTML = prefix + html + suffix;
+  while (depth--) el = el.lastChild;
+
+  // one element
+  if (el.firstChild == el.lastChild) {
+    return el.removeChild(el.firstChild);
+  }
+
+  // several elements
+  var fragment = doc.createDocumentFragment();
+  while (el.firstChild) {
+    fragment.appendChild(el.removeChild(el.firstChild));
+  }
+
+  return fragment;
+}
+
+}, {}],
+86: [function(require, module, exports) {
+
+/**
+ * Expose `generate`.
+ */
+
+module.exports = generate;
+
+
+/**
+ * Generate a global queue pushing method with `name`.
+ *
+ * @param {String} name
+ * @param {Object} options
+ *   @property {Boolean} wrap
+ * @return {Function}
+ */
+
+function generate (name, options) {
+  options = options || {};
+
+  return function (args) {
+    args = [].slice.call(arguments);
+    window[name] || (window[name] = []);
+    options.wrap === false
+      ? window[name].push.apply(window[name], args)
+      : window[name].push(args);
+  };
+}
+}, {}],
+87: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var toFunction = require('to-function');
+
+/**
+ * Filter the given `arr` with callback `fn(val, i)`,
+ * when a truthy value is return then `val` is included
+ * in the array returned.
+ *
+ * @param {Array} arr
+ * @param {Function} fn
+ * @return {Array}
+ * @api public
+ */
+
+module.exports = function(arr, fn){
+  var ret = [];
+  fn = toFunction(fn);
+  for (var i = 0; i < arr.length; ++i) {
+    if (fn(arr[i], i)) {
+      ret.push(arr[i]);
+    }
+  }
+  return ret;
+};
+
+}, {"to-function":72}],
+88: [function(require, module, exports) {
+
+/**
+ * Protocol.
+ */
+
+module.exports = function (url) {
+  switch (arguments.length) {
+    case 0: return check();
+    case 1: return transform(url);
+  }
+};
+
+
+/**
+ * Transform a protocol-relative `url` to the use the proper protocol.
+ *
+ * @param {String} url
+ * @return {String}
+ */
+
+function transform (url) {
+  return check() ? 'https:' + url : 'http:' + url;
+}
+
+
+/**
+ * Check whether `https:` be used for loading scripts.
+ *
+ * @return {Boolean}
+ */
+
+function check () {
+  return (
+    location.protocol == 'https:' ||
+    location.protocol == 'chrome-extension:'
+  );
+}
+}, {}],
+78: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var integration = require('analytics.js-integration');
+var push = require('global-queue')('dataLayer', { wrap: false });
+
+/**
+ * Expose `GTM`.
+ */
+
+var GTM = module.exports = integration('Google Tag Manager')
+  .assumesPageview()
+  .global('dataLayer')
+  .global('google_tag_manager')
+  .option('containerId', '')
+  .option('trackNamedPages', true)
+  .option('trackCategorizedPages', true)
+  .tag('<script src="//www.googletagmanager.com/gtm.js?id={{ containerId }}&l=dataLayer">');
+
+/**
+ * Initialize.
+ *
+ * https://developers.google.com/tag-manager
+ *
+ * @api public
+ */
+
+GTM.prototype.initialize = function() {
+  push({ 'gtm.start': Number(new Date()), event: 'gtm.js' });
+  this.load(this.ready);
+};
+
+/**
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
+ */
+
+GTM.prototype.loaded = function() {
+  return !!(window.dataLayer && Array.prototype.push !== window.dataLayer.push);
+};
+
+/**
+ * Page.
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+GTM.prototype.page = function(page) {
+  var category = page.category();
+  var name = page.fullName();
+  var opts = this.options;
+
+  // all
+  if (opts.trackAllPages) {
+    this.track(page.track());
+  }
+
+  // categorized
+  if (category && opts.trackCategorizedPages) {
+    this.track(page.track(category));
+  }
+
+  // named
+  if (name && opts.trackNamedPages) {
+    this.track(page.track(name));
+  }
+};
+
+/**
+ * Track.
+ *
+ * https://developers.google.com/tag-manager/devguide#events
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+GTM.prototype.track = function(track) {
+  var props = track.properties();
+  props.event = track.event();
+  push(props);
+};
+
+}, {"analytics.js-integration":85,"global-queue":86}],
+79: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var integration = require('analytics.js-integration');
+var each = require('each');
+
+/**
+ * Expose `Heap` integration.
+ */
+
+var Heap = module.exports = integration('Heap')
+  .global('heap')
+  .option('appId', '')
+  .tag('<script src="//cdn.heapanalytics.com/js/heap-{{ appId }}.js">');
+
+/**
+ * Initialize.
+ *
+ * https://heapanalytics.com/docs/installation#web
+ *
+ * @api public
+ */
+
+Heap.prototype.initialize = function() {
+  window.heap = window.heap || [];
+  window.heap.load = function(appid, config) {
+    window.heap.appid = appid;
+    window.heap.config = config;
+
+    var methodFactory = function(type) {
+      return function() {
+        window.heap.push([type].concat(Array.prototype.slice.call(arguments, 0)));
+      };
+    };
+
+    var heapMethods = ['clearEventProperties', 'identify', 'setEventProperties', 'track', 'unsetEventProperty'];
+    each(heapMethods, function(method) {
+      window.heap[method] = methodFactory(method);
+    });
+  };
+
+  window.heap.load(this.options.appId);
+  this.load(this.ready);
+};
+
+/**
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
+ */
+
+Heap.prototype.loaded = function() {
+  return !!(window.heap && window.heap.appid);
+};
+
+/**
+ * Identify.
+ *
+ * https://heapanalytics.com/docs#identify
+ *
+ * @api public
+ * @param {Identify} identify
+ */
+
+Heap.prototype.identify = function(identify) {
+  var traits = identify.traits({ email: '_email' });
+  var id = identify.userId();
+  if (id) traits.handle = id;
+  window.heap.identify(traits);
+};
+
+/**
+ * Track.
+ *
+ * https://heapanalytics.com/docs#track
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+Heap.prototype.track = function(track) {
+  window.heap.track(track.event(), track.properties());
+};
+
+}, {"analytics.js-integration":85,"each":4}],
+80: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var convert = require('convert-dates');
+var integration = require('analytics.js-integration');
+var push = require('global-queue')('_hsq');
+
+/**
+ * Expose `HubSpot` integration.
+ */
+
+var HubSpot = module.exports = integration('HubSpot')
+  .assumesPageview()
+  .global('_hsq')
+  .option('portalId', null)
+  .tag('<script id="hs-analytics" src="https://js.hs-analytics.net/analytics/{{ cacheBuster }}/{{ portalId }}.js">');
+
+/**
+ * Initialize.
+ *
+ * @api public
+ */
+
+HubSpot.prototype.initialize = function() {
+  window._hsq = [];
+  var cacheBuster = Math.ceil(new Date() / 300000) * 300000;
+  this.load({ cacheBuster: cacheBuster }, this.ready);
+};
+
+/**
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
+ */
+
+HubSpot.prototype.loaded = function() {
+  return !!(window._hsq && window._hsq.push !== Array.prototype.push);
+};
+
+/**
+ * Page.
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+HubSpot.prototype.page = function() {
+  push('trackPageView');
+};
+
+/**
+ * Identify.
+ *
+ * @api public
+ * @param {Identify} identify
+ */
+
+HubSpot.prototype.identify = function(identify) {
+  if (!identify.email()) return;
+  var traits = identify.traits();
+  traits = convertDates(traits);
+  push('identify', traits);
+};
+
+/**
+ * Track.
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+HubSpot.prototype.track = function(track) {
+  var props = track.properties();
+  props = convertDates(props);
+  push('trackEvent', track.event(), props);
+};
+
+/**
+ * Convert all the dates in the HubSpot properties to millisecond times
+ *
+ * @api private
+ * @param {Object} properties
+ */
+
+function convertDates(properties) {
+  return convert(properties, function(date) { return date.getTime(); });
+}
+
+}, {"convert-dates":107,"analytics.js-integration":85,"global-queue":86}],
+107: [function(require, module, exports) {
+
+var is = require('is');
+
+try {
+  var clone = require('clone');
+} catch (e) {
+  var clone = require('clone-component');
+}
+
+
+/**
+ * Expose `convertDates`.
+ */
+
+module.exports = convertDates;
+
+
+/**
+ * Recursively convert an `obj`'s dates to new values.
+ *
+ * @param {Object} obj
+ * @param {Function} convert
+ * @return {Object}
+ */
+
+function convertDates (obj, convert) {
+  obj = clone(obj);
+  for (var key in obj) {
+    var val = obj[key];
+    if (is.date(val)) obj[key] = convert(val);
+    if (is.object(val)) obj[key] = convertDates(val, convert);
+  }
+  return obj;
+}
+}, {"is":16,"clone":11}],
+81: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var alias = require('alias');
+var convertDates = require('convert-dates');
+var defaults = require('defaults');
+var del = require('obj-case').del;
+var integration = require('analytics.js-integration');
+var is = require('is');
+
+/**
+ * Expose `Intercom` integration.
+ */
+
+var Intercom = module.exports = integration('Intercom')
+  .global('Intercom')
+  .option('activator', '#IntercomDefaultWidget')
+  .option('appId', '')
+  .tag('<script src="https://widget.intercom.io/widget/{{ appId }}">');
+
+/**
+ * Initialize.
+ *
+ * http://docs.intercom.io/
+ * http://docs.intercom.io/#IntercomJS
+ *
+ * @api public
+ */
+
+Intercom.prototype.initialize = function() {
+  // Shim out the Intercom library.
+  window.Intercom = function() {
+    window.Intercom.q.push(arguments);
+  };
+  window.Intercom.q = [];
+
+  this.load(this.ready);
+};
+
+/**
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
+ */
+
+Intercom.prototype.loaded = function() {
+  return is.fn(window.Intercom);
+};
+
+/**
+ * Page.
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+Intercom.prototype.page = function() {
+  this.bootOrUpdate();
+};
+
+/**
+ * Identify.
+ *
+ * http://docs.intercom.io/#IntercomJS
+ *
+ * @api public
+ * @param {Identify} identify
+ */
+
+Intercom.prototype.identify = function(identify) {
+  var traits = identify.traits({ userId: 'user_id' });
+  var opts = identify.options(this.name);
+  var companyCreated = identify.companyCreated();
+  var created = identify.created();
+  var name = identify.name();
+  var id = identify.userId();
+  var group = this.analytics.group();
+
+  if (!id && !traits.email) {
+    return;
+  }
+
+  // intercom requires `company` to be an object. default it with group traits
+  // so that we guarantee an `id` is there, since they require it
+  if (traits.company !== null && !is.object(traits.company)) {
+    delete traits.company;
+  }
+
+  if (traits.company) {
+    defaults(traits.company, group.traits());
+  }
+
+  // name
+  if (name) traits.name = name;
+
+  // handle dates
+  if (created) {
+    del(traits, 'created');
+    del(traits, 'createdAt');
+    traits.created_at = created;
+  }
+
+  if (companyCreated) {
+    del(traits.company, 'created');
+    del(traits.company, 'createdAt');
+    traits.company.created_at = companyCreated;
+  }
+
+  // convert dates
+  traits = convertDates(traits, formatDate);
+
+  // handle options
+  if (opts.increments) traits.increments = opts.increments;
+  if (opts.userHash) traits.user_hash = opts.userHash;
+  if (opts.user_hash) traits.user_hash = opts.user_hash;
+
+  this.bootOrUpdate(traits);
+};
+
+/**
+ * Group.
+ *
+ * @api public
+ * @param {Group} group
+ */
+
+Intercom.prototype.group = function(group) {
+  var props = group.properties();
+  props = alias(props, { createdAt: 'created' });
+  props = alias(props, { created: 'created_at' });
+  var id = group.groupId();
+  if (id) props.id = id;
+  api('update', { company: props });
+};
+
+/**
+ * Track.
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+Intercom.prototype.track = function(track) {
+  api('trackEvent', track.event(), track.properties());
+};
+
+/**
+ * Boots or updates, as appropriate.
+ *
+ * @api private
+ * @param {Object} options
+ */
+
+Intercom.prototype.bootOrUpdate = function(options) {
+  options = options || {};
+  var method = this.booted === true ? 'update' : 'boot';
+  var activator = this.options.activator;
+  options.app_id = this.options.appId;
+
+  // Intercom, will force the widget to appear if the selector is
+  // #IntercomDefaultWidget so no need to check inbox, just need to check that
+  // the selector isn't #IntercomDefaultWidget.
+  if (activator !== '#IntercomDefaultWidget') {
+    options.widget = { activator: activator };
+  }
+
+  api(method, options);
+  this.booted = true;
+};
+
+/**
+ * Format a date to Intercom's liking.
+ *
+ * @api private
+ * @param {Date} date
+ * @return {number}
+ */
+
+function formatDate(date) {
+  return Math.floor(date / 1000);
+}
+
+/**
+ * Push a call onto the Intercom queue.
+ *
+ * @api private
+ */
+
+function api() {
+  window.Intercom.apply(window.Intercom, arguments);
+}
+
+}, {"alias":108,"convert-dates":107,"defaults":84,"obj-case":40,"analytics.js-integration":109,"is":16}],
+108: [function(require, module, exports) {
+
+var type = require('type');
+
+try {
+  var clone = require('clone');
+} catch (e) {
+  var clone = require('clone-component');
+}
+
+
+/**
+ * Expose `alias`.
+ */
+
+module.exports = alias;
+
+
+/**
+ * Alias an `object`.
+ *
+ * @param {Object} obj
+ * @param {Mixed} method
+ */
+
+function alias (obj, method) {
+  switch (type(method)) {
+    case 'object': return aliasByDictionary(clone(obj), method);
+    case 'function': return aliasByFunction(clone(obj), method);
+  }
+}
+
+
+/**
+ * Convert the keys in an `obj` using a dictionary of `aliases`.
+ *
+ * @param {Object} obj
+ * @param {Object} aliases
+ */
+
+function aliasByDictionary (obj, aliases) {
+  for (var key in aliases) {
+    if (undefined === obj[key]) continue;
+    obj[aliases[key]] = obj[key];
+    delete obj[key];
+  }
+  return obj;
+}
+
+
+/**
+ * Convert the keys in an `obj` using a `convert` function.
+ *
+ * @param {Object} obj
+ * @param {Function} convert
+ */
+
+function aliasByFunction (obj, convert) {
+  // have to create another object so that ie8 won't infinite loop on keys
+  var output = {};
+  for (var key in obj) output[convert(key)] = obj[key];
+  return output;
+}
+}, {"type":45,"clone":47}],
+109: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var bind = require('bind');
+var clone = require('clone');
+var debug = require('debug');
+var defaults = require('defaults');
+var extend = require('extend');
+var slug = require('slug');
+var protos = require('./protos');
+var statics = require('./statics');
+
+/**
+ * Create a new `Integration` constructor.
+ *
+ * @constructs Integration
+ * @param {string} name
+ * @return {Function} Integration
+ */
+
+function createIntegration(name){
+  /**
+   * Initialize a new `Integration`.
+   *
+   * @class
+   * @param {Object} options
+   */
+
+  function Integration(options){
+    if (options && options.addIntegration) {
+      // plugin
+      return options.addIntegration(Integration);
+    }
+    this.debug = debug('analytics:integration:' + slug(name));
+    this.options = defaults(clone(options) || {}, this.defaults);
+    this._queue = [];
+    this.once('ready', bind(this, this.flush));
+
+    Integration.emit('construct', this);
+    this.ready = bind(this, this.ready);
+    this._wrapInitialize();
+    this._wrapPage();
+    this._wrapTrack();
+  }
+
+  Integration.prototype.defaults = {};
+  Integration.prototype.globals = [];
+  Integration.prototype.templates = {};
+  Integration.prototype.name = name;
+  extend(Integration, statics);
+  extend(Integration.prototype, protos);
+
+  return Integration;
+}
+
+/**
+ * Exports.
+ */
+
+module.exports = createIntegration;
+
+}, {"bind":89,"clone":11,"debug":90,"defaults":14,"extend":91,"slug":92,"./protos":110,"./statics":111}],
+110: [function(require, module, exports) {
+/* global setInterval:true setTimeout:true */
+
+/**
+ * Module dependencies.
+ */
+
+var Emitter = require('emitter');
+var after = require('after');
+var each = require('each');
+var events = require('analytics-events');
+var fmt = require('fmt');
+var foldl = require('foldl');
+var loadIframe = require('load-iframe');
+var loadScript = require('load-script');
+var normalize = require('to-no-case');
+var nextTick = require('next-tick');
+var every = require('every');
+var is = require('is');
+
+/**
+ * Noop.
+ */
+
+function noop(){}
+
+/**
+ * hasOwnProperty reference.
+ */
+
+var has = Object.prototype.hasOwnProperty;
+
+/**
+ * Window defaults.
+ */
+
+var onerror = window.onerror;
+var onload = null;
+var setInterval = window.setInterval;
+var setTimeout = window.setTimeout;
+
+/**
+ * Mixin emitter.
+ */
+
+/* eslint-disable new-cap */
+Emitter(exports);
+/* eslint-enable new-cap */
+
+/**
+ * Initialize.
+ */
+
+exports.initialize = function(){
+  var ready = this.ready;
+  nextTick(ready);
+};
+
+/**
+ * Loaded?
+ *
+ * @api private
+ * @return {boolean}
+ */
+
+exports.loaded = function(){
+  return false;
+};
+
+/**
+ * Page.
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+/* eslint-disable no-unused-vars */
+exports.page = function(page){};
+/* eslint-enable no-unused-vars */
+
+/**
+ * Track.
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+/* eslint-disable no-unused-vars */
+exports.track = function(track){};
+/* eslint-enable no-unused-vars */
+
+/**
+ * Get values from items in `options` that are mapped to `key`.
+ * `options` is an integration setting which is a collection
+ * of type 'map', 'array', or 'mixed'
+ *
+ * Use cases include mapping events to pixelIds (map), sending generic
+ * conversion pixels only for specific events (array), or configuring dynamic
+ * mappings of event properties to query string parameters based on event (mixed)
+ *
+ * @api public
+ * @param {Object|Object[]|String[]} options An object, array of objects, or
+ * array of strings pulled from settings.mapping.
+ * @param {string} key The name of the item in options whose metadata
+ * we're looking for.
+ * @return {Array} An array of settings that match the input `key` name.
+ * @example
+ *
+ * // 'Map'
+ * var events = { my_event: 'a4991b88' };
+ * .map(events, 'My Event');
+ * // => ["a4991b88"]
+ * .map(events, 'whatever');
+ * // => []
+ *
+ * // 'Array'
+ * * var events = ['Completed Order', 'My Event'];
+ * .map(events, 'My Event');
+ * // => ["My Event"]
+ * .map(events, 'whatever');
+ * // => []
+ *
+ * // 'Mixed'
+ * var events = [{ key: 'my event', value: '9b5eb1fa' }];
+ * .map(events, 'my_event');
+ * // => ["9b5eb1fa"]
+ * .map(events, 'whatever');
+ * // => []
+ */
+
+exports.map = function(options, key){
+  var normalizedComparator = normalize(key);
+  var mappingType = getMappingType(options);
+
+  if (mappingType === 'unknown') {
+    return [];
+  }
+
+  return foldl(function(matchingValues, val, key) {
+    var compare;
+    var result;
+
+    if (mappingType === 'map') {
+      compare = key;
+      result = val;
+    }
+
+    if (mappingType === 'array') {
+      compare = val;
+      result = val;
+    }
+
+    if (mappingType === 'mixed') {
+      compare = val.key;
+      result = val.value;
+    }
+
+    if (normalize(compare) === normalizedComparator) {
+      matchingValues.push(result);
+    }
+
+    return matchingValues;
+  }, [], options);
+};
+
+/**
+ * Invoke a `method` that may or may not exist on the prototype with `args`,
+ * queueing or not depending on whether the integration is "ready". Don't
+ * trust the method call, since it contains integration party code.
+ *
+ * @api private
+ * @param {string} method
+ * @param {...*} args
+ */
+
+exports.invoke = function(method){
+  if (!this[method]) return;
+  var args = Array.prototype.slice.call(arguments, 1);
+  if (!this._ready) return this.queue(method, args);
+  var ret;
+
+  try {
+    this.debug('%s with %o', method, args);
+    ret = this[method].apply(this, args);
+  } catch (e) {
+    this.debug('error %o calling %s with %o', e, method, args);
+  }
+
+  return ret;
+};
+
+/**
+ * Queue a `method` with `args`. If the integration assumes an initial
+ * pageview, then let the first call to `page` pass through.
+ *
+ * @api private
+ * @param {string} method
+ * @param {Array} args
+ */
+
+exports.queue = function(method, args){
+  if (method === 'page' && this._assumesPageview && !this._initialized) {
+    return this.page.apply(this, args);
+  }
+
+  this._queue.push({ method: method, args: args });
+};
+
+/**
+ * Flush the internal queue.
+ *
+ * @api private
+ */
+
+exports.flush = function(){
+  this._ready = true;
+  var self = this;
+
+  each(this._queue, function(call){
+    self[call.method].apply(self, call.args);
+  });
+
+  // Empty the queue.
+  this._queue.length = 0;
+};
+
+/**
+ * Reset the integration, removing its global variables.
+ *
+ * @api private
+ */
+
+exports.reset = function(){
+  for (var i = 0; i < this.globals.length; i++) {
+    window[this.globals[i]] = undefined;
+  }
+
+  window.setTimeout = setTimeout;
+  window.setInterval = setInterval;
+  window.onerror = onerror;
+  window.onload = onload;
+};
+
+/**
+ * Load a tag by `name`.
+ *
+ * @param {string} name The name of the tag.
+ * @param {Object} locals Locals used to populate the tag's template variables
+ * (e.g. `userId` in '<img src="https://whatever.com/{{ userId }}">').
+ * @param {Function} [callback=noop] A callback, invoked when the tag finishes
+ * loading.
+ */
+
+exports.load = function(name, locals, callback){
+  // Argument shuffling
+  if (typeof name === 'function') { callback = name; locals = null; name = null; }
+  if (name && typeof name === 'object') { callback = locals; locals = name; name = null; }
+  if (typeof locals === 'function') { callback = locals; locals = null; }
+
+  // Default arguments
+  name = name || 'library';
+  locals = locals || {};
+
+  locals = this.locals(locals);
+  var template = this.templates[name];
+  if (!template) throw new Error(fmt('template "%s" not defined.', name));
+  var attrs = render(template, locals);
+  callback = callback || noop;
+  var self = this;
+  var el;
+
+  switch (template.type) {
+    case 'img':
+      attrs.width = 1;
+      attrs.height = 1;
+      el = loadImage(attrs, callback);
+      break;
+    case 'script':
+      el = loadScript(attrs, function(err){
+        if (!err) return callback();
+        self.debug('error loading "%s" error="%s"', self.name, err);
+      });
+      // TODO: hack until refactoring load-script
+      delete attrs.src;
+      each(attrs, function(key, val){
+        el.setAttribute(key, val);
+      });
+      break;
+    case 'iframe':
+      el = loadIframe(attrs, callback);
+      break;
+    default:
+      // No default case
+  }
+
+  return el;
+};
+
+/**
+ * Locals for tag templates.
+ *
+ * By default it includes a cache buster and all of the options.
+ *
+ * @param {Object} [locals]
+ * @return {Object}
+ */
+
+exports.locals = function(locals){
+  locals = locals || {};
+  var cache = Math.floor(new Date().getTime() / 3600000);
+  if (!locals.hasOwnProperty('cache')) locals.cache = cache;
+  each(this.options, function(key, val){
+    if (!locals.hasOwnProperty(key)) locals[key] = val;
+  });
+  return locals;
+};
+
+/**
+ * Simple way to emit ready.
+ *
+ * @api public
+ */
+
+exports.ready = function(){
+  this.emit('ready');
+};
+
+/**
+ * Wrap the initialize method in an exists check, so we don't have to do it for
+ * every single integration.
+ *
+ * @api private
+ */
+
+exports._wrapInitialize = function(){
+  var initialize = this.initialize;
+  this.initialize = function(){
+    this.debug('initialize');
+    this._initialized = true;
+    var ret = initialize.apply(this, arguments);
+    this.emit('initialize');
+    return ret;
+  };
+
+  if (this._assumesPageview) this.initialize = after(2, this.initialize);
+};
+
+/**
+ * Wrap the page method to call `initialize` instead if the integration assumes
+ * a pageview.
+ *
+ * @api private
+ */
+
+exports._wrapPage = function(){
+  var page = this.page;
+  this.page = function(){
+    if (this._assumesPageview && !this._initialized) {
+      return this.initialize.apply(this, arguments);
+    }
+
+    return page.apply(this, arguments);
+  };
+};
+
+/**
+ * Wrap the track method to call other ecommerce methods if available depending
+ * on the `track.event()`.
+ *
+ * @api private
+ */
+
+exports._wrapTrack = function(){
+  var t = this.track;
+  this.track = function(track){
+    var event = track.event();
+    var called;
+    var ret;
+
+    for (var method in events) {
+      if (has.call(events, method)) {
+        var regexp = events[method];
+        if (!this[method]) continue;
+        if (!regexp.test(event)) continue;
+        ret = this[method].apply(this, arguments);
+        called = true;
+        break;
+      }
+    }
+
+    if (!called) ret = t.apply(this, arguments);
+    return ret;
+  };
+};
+
+/**
+ * Determine the type of the option passed to `#map`
+ *
+ * @api private
+ * @param {Object|Object[]} mapping
+ * @return {String} mappingType
+ */
+
+function getMappingType(mapping) {
+  if (is.array(mapping)) {
+    return every(isMixed, mapping) ? 'mixed' : 'array';
+  }
+  if (is.object(mapping)) return 'map';
+  return 'unknown';
+}
+
+/**
+ * Determine if item in mapping array is a valid "mixed" type value
+ *
+ * Must be an object with properties "key" (of type string)
+ * and "value" (of any type)
+ *
+ * @api private
+ * @param {*} item
+ * @return {Boolean}
+ */
+
+function isMixed(item) {
+  if (!is.object(item)) return false;
+  if (!is.string(item.key)) return false;
+  if (!has.call(item, 'value')) return false;
+  return true;
+}
+
+/**
+ * TODO: Document me
+ *
+ * @api private
+ * @param {Object} attrs
+ * @param {Function} fn
+ * @return {Image}
+ */
+
+function loadImage(attrs, fn){
+  fn = fn || function(){};
+  var img = new Image();
+  img.onerror = error(fn, 'failed to load pixel', img);
+  img.onload = function(){ fn(); };
+  img.src = attrs.src;
+  img.width = 1;
+  img.height = 1;
+  return img;
+}
+
+/**
+ * TODO: Document me
+ *
+ * @api private
+ * @param {Function} fn
+ * @param {string} message
+ * @param {Element} img
+ * @return {Function}
+ */
+
+function error(fn, message, img){
+  return function(e){
+    e = e || window.event;
+    var err = new Error(message);
+    err.event = e;
+    err.source = img;
+    fn(err);
+  };
+}
+
+/**
+ * Render template + locals into an `attrs` object.
+ *
+ * @api private
+ * @param {Object} template
+ * @param {Object} locals
+ * @return {Object}
+ */
+
+function render(template, locals){
+  return foldl(function(attrs, val, key) {
+    attrs[key] = val.replace(/\{\{\ *(\w+)\ *\}\}/g, function(_, $1){
+      return locals[$1];
+    });
+    return attrs;
+  }, {}, template.attrs);
+}
+
+}, {"emitter":6,"after":8,"each":97,"analytics-events":98,"fmt":99,"foldl":100,"load-iframe":101,"load-script":102,"to-no-case":103,"next-tick":55,"every":112,"is":113}],
+112: [function(require, module, exports) {
+'use strict';
+
+/**
+ * Module dependencies.
+ */
+
+// FIXME: Hacky workaround for Duo
+var each; try { each = require('@ndhoule/each'); } catch(e) { each = require('each'); }
+
+/**
+ * Check if a predicate function returns `true` for all values in a `collection`.
+ * Checks owned, enumerable values and exits early when `predicate` returns
+ * `false`.
+ *
+ * @name every
+ * @param {Function} predicate The function used to test values.
+ * @param {Array|Object|string} collection The collection to search.
+ * @return {boolean} True if all values passes the predicate test, otherwise false.
+ * @example
+ * var isEven = function(num) { return num % 2 === 0; };
+ *
+ * every(isEven, []); // => true
+ * every(isEven, [1, 2]); // => false
+ * every(isEven, [2, 4, 6]); // => true
+ */
+
+var every = function every(predicate, collection) {
+  if (typeof predicate !== 'function') {
+    throw new TypeError('`predicate` must be a function but was a ' + typeof predicate);
+  }
+
+  var result = true;
+
+  each(function(val, key, collection) {
+    result = !!predicate(val, key, collection);
+
+    // Exit early
+    if (!result) {
+      return false;
+    }
+  }, collection);
+
+  return result;
+};
+
+/**
+ * Exports.
+ */
+
+module.exports = every;
+
+}, {"each":70}],
+113: [function(require, module, exports) {
+
+var isEmpty = require('is-empty');
+
+try {
+  var typeOf = require('type');
+} catch (e) {
+  var typeOf = require('component-type');
+}
+
+
+/**
+ * Types.
+ */
+
+var types = [
+  'arguments',
+  'array',
+  'boolean',
+  'date',
+  'element',
+  'function',
+  'null',
+  'number',
+  'object',
+  'regexp',
+  'string',
+  'undefined'
+];
+
+
+/**
+ * Expose type checkers.
+ *
+ * @param {Mixed} value
+ * @return {Boolean}
+ */
+
+for (var i = 0, type; type = types[i]; i++) exports[type] = generate(type);
+
+
+/**
+ * Add alias for `function` for old browsers.
+ */
+
+exports.fn = exports['function'];
+
+
+/**
+ * Expose `empty` check.
+ */
+
+exports.empty = isEmpty;
+
+
+/**
+ * Expose `nan` check.
+ */
+
+exports.nan = function (val) {
+  return exports.number(val) && val != val;
+};
+
+
+/**
+ * Generate a type checker.
+ *
+ * @param {String} type
+ * @return {Function}
+ */
+
+function generate (type) {
+  return function (value) {
+    return type === typeOf(value);
+  };
+}
+}, {"is-empty":44,"type":45,"component-type":45}],
+111: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var Emitter = require('emitter');
+var domify = require('domify');
+var each = require('each');
+var includes = require('includes');
+
+/**
+ * Mix in emitter.
+ */
+
+/* eslint-disable new-cap */
+Emitter(exports);
+/* eslint-enable new-cap */
+
+/**
+ * Add a new option to the integration by `key` with default `value`.
+ *
+ * @api public
+ * @param {string} key
+ * @param {*} value
+ * @return {Integration}
+ */
+
+exports.option = function(key, value){
+  this.prototype.defaults[key] = value;
+  return this;
+};
+
+/**
+ * Add a new mapping option.
+ *
+ * This will create a method `name` that will return a mapping for you to use.
+ *
+ * @api public
+ * @param {string} name
+ * @return {Integration}
+ * @example
+ * Integration('My Integration')
+ *   .mapping('events');
+ *
+ * new MyIntegration().track('My Event');
+ *
+ * .track = function(track){
+ *   var events = this.events(track.event());
+ *   each(events, send);
+ *  };
+ */
+
+exports.mapping = function(name){
+  this.option(name, []);
+  this.prototype[name] = function(key){
+    return this.map(this.options[name], key);
+  };
+  return this;
+};
+
+/**
+ * Register a new global variable `key` owned by the integration, which will be
+ * used to test whether the integration is already on the page.
+ *
+ * @api public
+ * @param {string} key
+ * @return {Integration}
+ */
+
+exports.global = function(key){
+  this.prototype.globals.push(key);
+  return this;
+};
+
+/**
+ * Mark the integration as assuming an initial pageview, so to defer loading
+ * the script until the first `page` call, noop the first `initialize`.
+ *
+ * @api public
+ * @return {Integration}
+ */
+
+exports.assumesPageview = function(){
+  this.prototype._assumesPageview = true;
+  return this;
+};
+
+/**
+ * Mark the integration as being "ready" once `load` is called.
+ *
+ * @api public
+ * @return {Integration}
+ */
+
+exports.readyOnLoad = function(){
+  this.prototype._readyOnLoad = true;
+  return this;
+};
+
+/**
+ * Mark the integration as being "ready" once `initialize` is called.
+ *
+ * @api public
+ * @return {Integration}
+ */
+
+exports.readyOnInitialize = function(){
+  this.prototype._readyOnInitialize = true;
+  return this;
+};
+
+/**
+ * Define a tag to be loaded.
+ *
+ * @api public
+ * @param {string} [name='library'] A nicename for the tag, commonly used in
+ * #load. Helpful when the integration has multiple tags and you need a way to
+ * specify which of the tags you want to load at a given time.
+ * @param {String} str DOM tag as string or URL.
+ * @return {Integration}
+ */
+
+exports.tag = function(name, tag){
+  if (tag == null) {
+    tag = name;
+    name = 'library';
+  }
+  this.prototype.templates[name] = objectify(tag);
+  return this;
+};
+
+/**
+ * Given a string, give back DOM attributes.
+ *
+ * Do it in a way where the browser doesn't load images or iframes. It turns
+ * out domify will load images/iframes because whenever you construct those
+ * DOM elements, the browser immediately loads them.
+ *
+ * @api private
+ * @param {string} str
+ * @return {Object}
+ */
+
+function objectify(str) {
+  // replace `src` with `data-src` to prevent image loading
+  str = str.replace(' src="', ' data-src="');
+
+  var el = domify(str);
+  var attrs = {};
+
+  each(el.attributes, function(attr){
+    // then replace it back
+    var name = attr.name === 'data-src' ? 'src' : attr.name;
+    if (!includes(attr.name + '=', str)) return;
+    attrs[name] = attr.value;
+  });
+
+  return {
+    type: el.tagName.toLowerCase(),
+    attrs: attrs
+  };
+}
+
+}, {"emitter":6,"domify":106,"each":97,"includes":68}],
+82: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var each = require('each');
+var integration = require('analytics.js-integration');
+var is = require('is');
+var push = require('global-queue')('_kmq');
+
+/**
+ * Expose `KISSmetrics` integration.
+ */
+
+var KISSmetrics = module.exports = integration('KISSmetrics')
+  .assumesPageview()
+  .global('KM')
+  .global('_kmil')
+  .global('_kmq')
+  .option('apiKey', '')
+  .option('prefixProperties', true)
+  .option('trackCategorizedPages', true)
+  .option('trackNamedPages', true)
+  .tag('library', '<script src="//scripts.kissmetrics.com/{{ apiKey }}.2.js">');
+
+/**
+ * Check if browser is mobile, for kissmetrics.
+ *
+ * http://support.kissmetrics.com/how-tos/browser-detection.html#mobile-vs-non-mobile
+ */
+
+exports.isMobile = navigator.userAgent.match(/Android/i)
+  || navigator.userAgent.match(/BlackBerry/i)
+  || navigator.userAgent.match(/IEMobile/i)
+  || navigator.userAgent.match(/Opera Mini/i)
+  || navigator.userAgent.match(/iPad/i)
+  || navigator.userAgent.match(/iPhone|iPod/i);
+
+/**
+ * Initialize.
+ *
+ * http://support.kissmetrics.com/apis/javascript
+ *
+ * @param {Object} page
+ */
+
+KISSmetrics.prototype.initialize = function(page) {
+  var self = this;
+  window._kmq = [];
+  if (exports.isMobile) push('set', { 'Mobile Session': 'Yes' });
+
+  this.load('library', function() {
+    self.trackPage(page);
+    self.ready();
+  });
+};
+
+/**
+ * Loaded?
+ *
+ * @return {Boolean}
+ */
+
+KISSmetrics.prototype.loaded = function() {
+  return is.object(window.KM);
+};
+
+/**
+ * Page.
+ *
+ * @param {Page} page
+ */
+
+KISSmetrics.prototype.page = function(page) {
+  if (!window.KM_SKIP_PAGE_VIEW) window.KM.pageView();
+  this.trackPage(page);
+};
+
+/**
+ * Track page.
+ *
+ * @param {Page} page
+ */
+
+KISSmetrics.prototype.trackPage = function(page) {
+  var category = page.category();
+  var name = page.fullName();
+  var opts = this.options;
+
+  // named pages
+  if (name && opts.trackNamedPages) {
+    this.track(page.track(name));
+  }
+
+  // categorized pages
+  if (category && opts.trackCategorizedPages) {
+    this.track(page.track(category));
+  }
+};
+
+/**
+ * Identify.
+ *
+ * @param {Identify} identify
+ */
+
+KISSmetrics.prototype.identify = function(identify) {
+  var traits = identify.traits();
+  var id = identify.userId();
+  if (id) push('identify', id);
+  if (traits) push('set', traits);
+};
+
+/**
+ * Track.
+ *
+ * @param {Track} track
+ */
+
+KISSmetrics.prototype.track = function(track) {
+  var mapping = { revenue: 'Billing Amount' };
+  var event = track.event();
+  var properties = track.properties(mapping);
+  if (this.options.prefixProperties) properties = prefix(event, properties);
+  push('record', event, properties);
+};
+
+/**
+ * Alias.
+ *
+ * @param {Alias} to
+ */
+
+KISSmetrics.prototype.alias = function(alias) {
+  push('alias', alias.to(), alias.from());
+};
+
+/**
+ * Completed order.
+ *
+ * @param {Track} track
+ * @api private
+ */
+
+KISSmetrics.prototype.completedOrder = function(track) {
+  var products = track.products();
+  var event = track.event();
+
+  // transaction
+  push('record', event, prefix(event, track.properties()));
+
+  // items
+  window._kmq.push(function() {
+    var km = window.KM;
+    each(products, function(product, i) {
+      var item = prefix(event, product);
+      item._t = km.ts() + i;
+      item._d = 1;
+      km.set(item);
+    });
+  });
+};
+
+/**
+ * Prefix properties with the event name.
+ *
+ * @param {String} event
+ * @param {Object} properties
+ * @return {Object} prefixed
+ * @api private
+ */
+
+function prefix(event, properties) {
+  var prefixed = {};
+  each(properties, function(key, val) {
+    if (key === 'Billing Amount') {
+      prefixed[key] = val;
+    } else {
+      prefixed[event + ' - ' + key] = val;
+    }
+  });
+  return prefixed;
+}
+
+}, {"each":4,"analytics.js-integration":85,"is":16,"global-queue":86}],
+83: [function(require, module, exports) {
+
+/**
+ * Module dependencies.
+ */
+
+var each = require('each');
+var foldl = require('foldl');
+var integration = require('analytics.js-integration');
+var push = require('global-queue')('optimizely');
+var tick = require('next-tick');
+
+/**
+ * Expose `Optimizely` integration.
+ */
+
+var Optimizely = module.exports = integration('Optimizely')
+  .option('listen', false)
+  .option('trackCategorizedPages', true)
+  .option('trackNamedPages', true)
+  .option('variations', true);
+
+/**
+ * The name and version for this integration.
+ */
+
+var integrationContext = {
+  name: 'optimizely',
+  version: '1.0.0'
+};
+
+/**
+ * Initialize.
+ *
+ * https://www.optimizely.com/docs/api#function-calls
+ *
+ * @api public
+ */
+
+Optimizely.prototype.initialize = function() {
+  var self = this;
+  if (this.options.variations) {
+    tick(function() {
+      self.replay();
+    });
+  }
+  if (this.options.listen) {
+    tick(function() {
+      self.roots();
+    });
+  }
+  this.ready();
+};
+
+/**
+ * Track.
+ *
+ * https://www.optimizely.com/docs/api#track-event
+ *
+ * @api public
+ * @param {Track} track
+ */
+
+Optimizely.prototype.track = function(track) {
+  var props = track.properties();
+  if (props.revenue) props.revenue *= 100;
+  push('trackEvent', track.event(), props);
+};
+
+/**
+ * Page.
+ *
+ * https://www.optimizely.com/docs/api#track-event
+ *
+ * @api public
+ * @param {Page} page
+ */
+
+Optimizely.prototype.page = function(page) {
+  var category = page.category();
+  var name = page.fullName();
+  var opts = this.options;
+
+  // categorized pages
+  if (category && opts.trackCategorizedPages) {
+    this.track(page.track(category));
+  }
+
+  // named pages
+  if (name && opts.trackNamedPages) {
+    this.track(page.track(name));
+  }
+};
+
+/**
+ * Send experiment data as track events to Segment
+ *
+ * https://www.optimizely.com/docs/api#data-object
+ *
+ * @api private
+ */
+
+Optimizely.prototype.roots = function() {
+  // In case the snippet isn't on the page
+  //
+  // FIXME: Under what conditions does this happen? Sounds like we should fix
+  // our #loaded method?
+  if (!window.optimizely) return;
+
+  var data = window.optimizely.data;
+  if (!data) return;
+  var allExperiments = data.experiments;
+  if (!data || !data.state || !allExperiments) return;
+  var activeExperiments = getExperiments({
+    variationNamesMap: data.state.variationNamesMap,
+    variationIdsMap: data.state.variationIdsMap,
+    activeExperimentIds: data.state.activeExperiments,
+    allExperiments: allExperiments
+  });
+  var self = this;
+
+  each(activeExperiments, function(props) {
+    self.analytics.track(
+      'Experiment Viewed',
+      props,
+      { context: { integration: integrationContext } }
+    );
+  });
+};
+
+/**
+ * Replay experiment data as traits to other enabled providers.
+ *
+ * https://www.optimizely.com/docs/api#data-object
+ *
+ * @api private
+ */
+
+Optimizely.prototype.replay = function() {
+  // In case the snippet isn't on the page
+  //
+  // FIXME: Under what conditions does this happen? Sounds like we should fix
+  // our #loaded method?
+  if (!window.optimizely) return;
+
+  var data = window.optimizely.data;
+  if (!data || !data.experiments || !data.state) return;
+
+  var traits = foldl(function(traits, variation, experimentId) {
+    var experiment = data.experiments[experimentId].name;
+    traits['Experiment: ' + experiment] = variation;
+    return traits;
+  }, {}, data.state.variationNamesMap);
+
+  this.analytics.identify(traits);
+};
+
+/**
+ * Retrieves active experiments.
+ *
+ * @api private
+ * @param {Object} options
+ */
+
+function getExperiments(options) {
+  return foldl(function(results, experimentId) {
+    var experiment = options.allExperiments[experimentId];
+    if (experiment) {
+      results.push({
+        variationName: options.variationNamesMap[experimentId],
+        variationId: options.variationIdsMap[experimentId][0],
+        experimentId: experimentId,
+        experimentName: experiment.name
+      });
+    }
+    return results;
+  }, [], options.activeExperimentIds);
+}
+
+}, {"each":4,"foldl":100,"analytics.js-integration":85,"global-queue":86,"next-tick":55}],
+5: [function(require, module, exports) {
+module.exports = {
+  "name": "analytics",
+  "version": "2.9.1",
+  "main": "analytics.js",
+  "dependencies": {},
+  "devDependencies": {}
+}
+;
+}, {}]}, {}, {"1":""}));
