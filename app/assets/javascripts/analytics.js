@@ -290,9 +290,13 @@ Analytics.prototype.init = Analytics.prototype.initialize = function(settings, o
     if (options.initialPageview && integration.options.initialPageview === false) {
       integration.page = after(2, integration.page);
     }
-
     integration.analytics = self;
     integration.once('ready', ready);
+
+    if (name === "KISSmetrics" || name === "Google Tag Manager") {
+      integration.page();
+    }
+
     integration.initialize();
   });
 

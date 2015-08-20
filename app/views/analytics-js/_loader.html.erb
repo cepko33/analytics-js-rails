@@ -34,21 +34,10 @@ analytics.load = function(callback) {
 };
 
 analytics.load(function () {
-  analytics.initialize({
-    'Google Analytics': {
-       trackingId: 'UA-37403285-4'
-     }
-  });
+  analytics.initialize(<%= providers.to_json.html_safe %>);
+  analytics.debug();
 });
 
-<% if @current_user %>
-analytics.identify('<%= @current_user.id %>',{
-  created: '<%= @current_user.created_at %>',
-  email: '<%= @current_user.email %>'
-});
-<% end %>
-
-// track the page view
 analytics.page();
 
 </script>
